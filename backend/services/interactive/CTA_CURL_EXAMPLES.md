@@ -131,29 +131,6 @@ curl -X POST "http://localhost:3000/api/messages/send" \
 }
 ```
 
-## Using with Templates
-
-Save templates for easy reuse:
-
-```bash
-curl -X POST "http://localhost:3000/api/messages/templates" \
-  -H "x-api-key: YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "OTP Verification",
-    "type": "cta_copy",
-    "data": {
-      "header": "Verification",
-      "body": "Your verification code is below. Tap to copy.",
-      "footer": "Valid for 10 minutes",
-      "buttons": [{
-        "name": "cta_copy",
-        "buttonParamsJson": "{\"display_text\":\"Copy Code\",\"copy_code\":\"\"}"
-      }]
-    }
-  }'
-```
-
 ## Template Variables
 
 All fields support template variables using `{{VARIABLE_NAME}}` syntax:

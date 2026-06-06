@@ -17,8 +17,6 @@ import {
   List,
   Megaphone,
   Image,
-  FileText,
-  Clock,
   Inbox,
   BookOpen,
   Send,
@@ -28,7 +26,6 @@ import {
   Bot,
   Brain,
   GitBranch,
-  Code,
   Terminal,
 } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
@@ -119,24 +116,13 @@ const userNav = [
     section: "Messages",
   },
   {
-    label: "Message Builder",
-    icon: FileText,
-    to: "/dashboard/messages/builder",
-    section: "Messages",
-  },
-  {
-    label: "Message Templates",
-    icon: Inbox,
-    to: "/dashboard/templates",
-    section: "Messages",
-  },
-  {
     label: "Message History",
     icon: History,
     to: "/dashboard/message-history",
     section: "Messages",
   },
   { label: "Number Lists", icon: List, to: "/dashboard/lists", section: null },
+  { label: "Groups", icon: Users, to: "/dashboard/groups", section: null },
   {
     label: "Media Gallery",
     icon: Image,

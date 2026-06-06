@@ -41,7 +41,7 @@ const docs = {
       body: {
         session:
           "Required. WhatsApp session id. sessionId is also accepted.",
-        to: "Required. Recipient number with country code. phoneNumber is also accepted.",
+        to: "Required. Recipient number with country code or group JID ending with @g.us. phoneNumber is also accepted.",
         message:
           "Main body text. If empty, media.caption is used for media/button messages.",
         media_type:
@@ -93,6 +93,24 @@ const docs = {
       path: "/api/sessions/:id/reconnect",
       description:
         "Force reconnect a recoverable WhatsApp session. Auto reconnect also runs in the background.",
+    },
+    {
+      method: "GET",
+      path: "/api/sessions/:id/groups",
+      description:
+        "List WhatsApp groups visible to the connected number for this session. Use a returned group jid as the to value in /api/messages/send.",
+      successResponse: {
+        success: true,
+        sessionId: "wa_1780579278384_8dy6xrh",
+        count: 1,
+        data: [
+          {
+            jid: "120363000000000000@g.us",
+            subject: "Customer Support Group",
+            participantsCount: 24,
+          },
+        ],
+      },
     },
   ],
   compatibility: {

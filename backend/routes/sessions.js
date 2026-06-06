@@ -9,6 +9,22 @@ router.post("/create", authMiddleware, sessionController.createSession);
 router.get("/", authMiddleware, sessionController.listSessions);
 router.get("/:id", authMiddleware, sessionController.getSession);
 router.get("/:id/qr", authMiddleware, sessionController.getSessionQR);
+router.get("/:id/groups", authMiddleware, sessionController.getSessionGroups);
+router.get(
+  "/:id/groups/:groupJid/participants",
+  authMiddleware,
+  sessionController.getGroupParticipants,
+);
+router.get(
+  "/:id/groups/:groupJid/export",
+  authMiddleware,
+  sessionController.exportGroupParticipants,
+);
+router.post(
+  "/:id/groups/:groupJid/import-number-list",
+  authMiddleware,
+  sessionController.importGroupParticipantsToNumberList,
+);
 router.delete("/:id", authMiddleware, sessionController.deleteSession);
 router.post("/:id/logout", authMiddleware, sessionController.logoutSession);
 router.post("/:id/reconnect", authMiddleware, sessionController.reconnectSession);

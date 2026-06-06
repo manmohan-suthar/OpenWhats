@@ -72,6 +72,7 @@ import ApiLogs from "./pages/user/ApiLogs";
 import Analytics from "./pages/user/Analytics";
 import UserSettings from "./pages/user/UserSettings";
 import NumberLists from "./pages/user/NumberLists";
+import Groups from "./pages/user/Groups";
 import Campaigns from "./pages/user/Campaigns";
 import MediaGallery from "./pages/user/MediaGallery";
 import ApiDocs from "./pages/user/ApiDocs";
@@ -82,8 +83,6 @@ import WhatsAppChats from "./pages/user/WhatsAppChats";
 import AiAgent from "./pages/user/AiAgent";
 import FlowBuilder from "./pages/user/FlowBuilder";
 import CreateFlowPage from "./pages/user/CreateFlowPage";
-import MessageBuilderPage from "./pages/MessageBuilderPage";
-import TemplatesPage from "./pages/user/TemplatesPage";
 // New admin pages
 import CampaignManagement from "./pages/admin/CampaignManagement";
 import MessageLogs from "./pages/admin/MessageLogs";
@@ -150,8 +149,6 @@ function AppRoutes() {
         <Route index element={<UserDashboard />} />
         <Route path="sessions" element={<Sessions />} />
         <Route path="messages" element={<Messages />} />
-        <Route path="messages/builder" element={<MessageBuilderPage />} />
-        <Route path="templates" element={<TemplatesPage />} />
         <Route path="send-message" element={<SendSingleMessage />} />
         <Route path="message-history" element={<MessageHistory />} />
         <Route path="api-keys" element={<ApiKeys />} />
@@ -161,6 +158,7 @@ function AppRoutes() {
         <Route path="settings" element={<UserSettings />} />
         <Route path="subscription" element={<Subscription />} />
         <Route path="lists" element={<NumberLists />} />
+        <Route path="groups" element={<Groups />} />
         <Route path="campaigns" element={<Campaigns />} />
         <Route path="media" element={<MediaGallery />} />
         <Route path="chats" element={<WhatsAppChats />} />

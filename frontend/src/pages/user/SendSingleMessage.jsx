@@ -21,6 +21,8 @@ import {
   StickyNote,
   ArrowLeft,
   Loader,
+  Users,
+  RefreshCw,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
@@ -109,6 +111,9 @@ export default function SendSingleMessage() {
   const [sessions, setSessions] = useState([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [recentRecipients, setRecentRecipients] = useState([]);
+  const [targetType, setTargetType] = useState("number");
+  const [groups, setGroups] = useState([]);
+  const [loadingGroups, setLoadingGroups] = useState(false);
   const [phone, setPhone] = useState("");
   const [contactName, setContactName] = useState("");
   const [message, setMessage] = useState("");
@@ -168,6 +173,33 @@ export default function SendSingleMessage() {
     }
   };
 
+  const loadGroups = async (sessionId = session) => {
+    if (!sessionId) {
+      setGroups([]);
+      return;
+    }
+
+    try {
+      setLoadingGroups(true);
+      const data = await api.getSessionGroups(sessionId);
+      if (data.success === false) {
+        throw new Error(data.error || "Failed to load groups");
+      }
+      setGroups(Array.isArray(data.data) ? data.data : []);
+    } catch (err) {
+      setGroups([]);
+      setError(err.message || "Failed to load groups");
+    } finally {
+      setLoadingGroups(false);
+    }
+  };
+
+  useEffect(() => {
+    if (targetType === "group" && session) {
+      loadGroups(session);
+    }
+  }, [targetType, session]);
+
   const loadRecentRecipients = async () => {
     try {
       const sessionsData = await api.getSessions();
@@ -180,6 +212,7 @@ export default function SendSingleMessage() {
       }
       const uniqueRecipients = new Map();
       allMessages.forEach((msg) => {
+        if (String(msg.phoneNumber || "").endsWith("@g.us")) return;
         if (!uniqueRecipients.has(msg.phoneNumber)) {
           uniqueRecipients.set(msg.phoneNumber, {
             phoneNumber: msg.phoneNumber,
@@ -197,7 +230,18 @@ export default function SendSingleMessage() {
 
   const characterCount = message.length;
   const messageWarning = characterCount > 1000;
-  const isValid = phone && session && (message || attachments.length > 0);
+  const selectedGroup = groups.find((group) => group.jid === phone);
+  const targetLabel =
+    targetType === "group"
+      ? selectedGroup?.subject || selectedGroup?.name || "Select a group"
+      : contactName || "Select a contact";
+  const targetSubLabel =
+    targetType === "group" ? phone || "Choose a group" : phone || "Enter a phone number";
+  const isValid =
+    phone &&
+    session &&
+    (targetType === "group" ? phone.endsWith("@g.us") : true) &&
+    (message || attachments.length > 0);
 
   const handleSelectRecentRecipient = (recipient) => {
     setPhone(recipient.phoneNumber);
@@ -288,7 +332,7 @@ export default function SendSingleMessage() {
     <div className="page space-y-5">
       <PageHeader
         title="Send Single Message"
-        subtitle="Send a WhatsApp message directly to any number"
+        subtitle="Send a WhatsApp message directly to a number or group"
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -314,7 +358,13 @@ export default function SendSingleMessage() {
             ) : (
               <select
                 value={session}
-                onChange={(e) => setSession(e.target.value)}
+                onChange={(e) => {
+                  setSession(e.target.value);
+                  setPhone("");
+                  setContactName("");
+                  setGroups([]);
+                  setShowRecentDropdown(false);
+                }}
                 className="w-full input"
               >
                 <option value="">Select a session…</option>
@@ -330,69 +380,147 @@ export default function SendSingleMessage() {
           {/* Recipient */}
           <div className="card p-5 space-y-4">
             <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-2">
-              <Phone size={15} className="text-slate-400" />
+              {targetType === "group" ? (
+                <Users size={15} className="text-slate-400" />
+              ) : (
+                <Phone size={15} className="text-slate-400" />
+              )}
               Recipient
             </h3>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="relative" ref={phoneInputRef}>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
-                  Phone Number <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="tel"
-                  placeholder="+91 98765 43210"
-                  value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  onFocus={() => setShowRecentDropdown(true)}
-                  className="w-full input"
-                />
-                <p className="text-[10px] text-slate-400 mt-1">Include country code (+91 for India)</p>
+            <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1 w-fit">
+              {[
+                { id: "number", label: "Number", icon: Phone },
+                { id: "group", label: "Group", icon: Users },
+              ].map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => {
+                    setTargetType(id);
+                    setPhone("");
+                    setContactName("");
+                    setShowRecentDropdown(false);
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    targetType === id
+                      ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-sm"
+                      : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+                  }`}
+                >
+                  <Icon size={13} />
+                  {label}
+                </button>
+              ))}
+            </div>
 
-                {showRecentDropdown && recentRecipients.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                    <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-3 pt-2 pb-1">
-                      Recent
+            {targetType === "group" ? (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                    WhatsApp Group <span className="text-red-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => loadGroups()}
+                    disabled={!session || loadingGroups}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-primary-600 disabled:text-slate-400"
+                  >
+                    <RefreshCw size={12} className={loadingGroups ? "animate-spin" : ""} />
+                    Refresh
+                  </button>
+                </div>
+                <select
+                  value={phone}
+                  onChange={(e) => {
+                    const group = groups.find((item) => item.jid === e.target.value);
+                    setPhone(e.target.value);
+                    setContactName(group?.subject || group?.name || "");
+                  }}
+                  disabled={!session || loadingGroups}
+                  className="w-full input"
+                >
+                  <option value="">
+                    {loadingGroups ? "Loading groups..." : "Select a group..."}
+                  </option>
+                  {groups.map((group) => (
+                    <option key={group.jid} value={group.jid}>
+                      {group.subject || group.name} ({group.participantsCount || 0})
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[10px] text-slate-400">
+                  Groups are loaded from the selected connected WhatsApp number.
+                </p>
+                {!loadingGroups && session && groups.length === 0 && (
+                  <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
+                    <p className="text-xs text-amber-700 dark:text-amber-300">
+                      No groups found for this session, or the session is still syncing.
                     </p>
-                    {recentRecipients.map((recipient, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleSelectRecentRecipient(recipient);
-                        }}
-                        className="w-full text-left px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-3"
-                      >
-                        <div className="w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center flex-shrink-0">
-                          <span className="text-xs font-semibold text-primary-600">
-                            {(recipient.contactName || "?")[0].toUpperCase()}
-                          </span>
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-medium text-slate-900 dark:text-white truncate">
-                            {recipient.contactName}
-                          </p>
-                          <p className="text-[10px] text-slate-400">{recipient.phoneNumber}</p>
-                        </div>
-                      </button>
-                    ))}
                   </div>
                 )}
               </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="relative" ref={phoneInputRef}>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                    Phone Number <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="tel"
+                    placeholder="+91 98765 43210"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    onFocus={() => setShowRecentDropdown(true)}
+                    className="w-full input"
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">Include country code (+91 for India)</p>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
-                  Contact Name <span className="text-slate-400">(optional)</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g., Rahul Sharma"
-                  value={contactName}
-                  onChange={(e) => setContactName(e.target.value)}
-                  className="w-full input"
-                />
+                  {showRecentDropdown && recentRecipients.length > 0 && (
+                    <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-3 pt-2 pb-1">
+                        Recent
+                      </p>
+                      {recentRecipients.map((recipient, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleSelectRecentRecipient(recipient);
+                          }}
+                          className="w-full text-left px-3 py-2.5 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors flex items-center gap-3"
+                        >
+                          <div className="w-7 h-7 rounded-full bg-primary-100 dark:bg-primary-900/30 flex items-center justify-center flex-shrink-0">
+                            <span className="text-xs font-semibold text-primary-600">
+                              {(recipient.contactName || "?")[0].toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-slate-900 dark:text-white truncate">
+                              {recipient.contactName}
+                            </p>
+                            <p className="text-[10px] text-slate-400">{recipient.phoneNumber}</p>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-600 dark:text-slate-400 mb-1.5">
+                    Contact Name <span className="text-slate-400">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g., Rahul Sharma"
+                    value={contactName}
+                    onChange={(e) => setContactName(e.target.value)}
+                    className="w-full input"
+                  />
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Compose */}
@@ -604,7 +732,9 @@ export default function SendSingleMessage() {
                 <ArrowLeft size={17} className="text-white" />
               </button>
               <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
-                {contactName ? (
+                {targetType === "group" ? (
+                  <Users size={15} className="text-white/80" />
+                ) : contactName ? (
                   <span className="text-sm font-bold text-white">
                     {contactName[0].toUpperCase()}
                   </span>
@@ -614,9 +744,9 @@ export default function SendSingleMessage() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-white truncate">
-                  {contactName || "Select a contact"}
+                  {targetLabel}
                 </p>
-                <p className="text-xs text-white/60">{phone || "Enter a phone number"}</p>
+                <p className="text-xs text-white/60 truncate">{targetSubLabel}</p>
               </div>
               <div className="flex items-center gap-1">
                 <button className="p-1.5 hover:bg-white/10 rounded-full transition-colors">
@@ -740,7 +870,7 @@ export default function SendSingleMessage() {
             <div className="bg-white dark:bg-[#15202b] border-t border-slate-100 dark:border-slate-800 px-4 py-3 grid grid-cols-3 gap-2 text-xs">
               <div>
                 <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">To</p>
-                <p className="font-semibold text-slate-700 dark:text-slate-300 truncate">{phone || "—"}</p>
+                <p className="font-semibold text-slate-700 dark:text-slate-300 truncate">{targetSubLabel || "—"}</p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-0.5">Session</p>
@@ -766,7 +896,7 @@ export default function SendSingleMessage() {
             </div>
             <div className="flex-1">
               <p className="text-sm font-semibold">Message Sent!</p>
-              <p className="text-xs text-white/70">Delivered to {phone}</p>
+              <p className="text-xs text-white/70">Delivered to {targetLabel}</p>
             </div>
             <button onClick={() => setSendStatus(null)} className="p-1 hover:bg-white/10 rounded">
               <X size={15} className="text-white" />
@@ -798,13 +928,17 @@ export default function SendSingleMessage() {
           <div className="rounded-xl overflow-hidden shadow-lg">
             <div className="bg-gradient-to-r from-[#008069] to-[#00a884] px-4 py-3 flex items-center gap-3">
               <div className="w-9 h-9 rounded-full bg-white/20 flex items-center justify-center">
-                <span className="text-sm font-bold text-white">
-                  {(contactName || "C")[0].toUpperCase()}
-                </span>
+                {targetType === "group" ? (
+                  <Users size={15} className="text-white/80" />
+                ) : (
+                  <span className="text-sm font-bold text-white">
+                    {(contactName || "C")[0].toUpperCase()}
+                  </span>
+                )}
               </div>
               <div>
-                <p className="text-sm font-semibold text-white">{contactName || "Contact"}</p>
-                <p className="text-xs text-white/70">{phone}</p>
+                <p className="text-sm font-semibold text-white">{targetLabel}</p>
+                <p className="text-xs text-white/70">{targetSubLabel}</p>
               </div>
             </div>
             <div className="p-4 min-h-[160px] bg-[#efeae2] dark:bg-[#0b141a]">
@@ -847,8 +981,8 @@ export default function SendSingleMessage() {
           <div className="grid grid-cols-2 gap-3">
             <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
               <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Recipient</p>
-              <p className="text-sm font-medium text-slate-800 dark:text-white">{contactName || "—"}</p>
-              <p className="text-xs text-slate-400">{phone}</p>
+              <p className="text-sm font-medium text-slate-800 dark:text-white">{targetLabel || "—"}</p>
+              <p className="text-xs text-slate-400">{targetSubLabel}</p>
             </div>
             <div className="p-3 bg-slate-50 dark:bg-slate-800 rounded-xl">
               <p className="text-[10px] text-slate-400 uppercase tracking-wide mb-1">Session</p>

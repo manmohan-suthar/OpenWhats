@@ -5,7 +5,6 @@ import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { sendSubscriptionError } from "../utils/subscription.js";
-import MessageTemplateLocal from "../models/MessageTemplateLocal.js";
 import unifiedMessageService, {
   isUnifiedMessagePayload,
 } from "../services/unifiedMessageService.js";
@@ -254,69 +253,8 @@ export const updateMessageStatus = async (req, res) => {
   }
 };
 
-export const saveMessageTemplate = async (req, res) => {
-  try {
-    const { name, type, data, sessionId = "" } = req.body || {};
-
-    if (!name || !type || !data || typeof data !== "object") {
-      return res.status(400).json({
-        success: false,
-        error: "name, type and data are required",
-      });
-    }
-
-    const template = await MessageTemplateLocal.create({
-      userId: req.user._id,
-      name,
-      type,
-      data,
-      sessionId,
-    });
-
-    return res.status(201).json({ success: true, data: template });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-export const getMessageTemplates = async (req, res) => {
-  try {
-    const templates = await MessageTemplateLocal.find({ userId: req.user._id })
-      .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json({ success: true, data: templates });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-};
-
-export const deleteMessageTemplate = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const deleted = await MessageTemplateLocal.findOneAndDelete({
-      _id: id,
-      userId: req.user._id,
-    });
-
-    if (!deleted) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Template not found" });
-    }
-
-    return res.json({ success: true });
-  } catch (err) {
-    return res.status(500).json({ success: false, error: err.message });
-  }
-};
-
 export default {
   sendMessage,
   getSessionMessages,
   updateMessageStatus,
-  saveMessageTemplate,
-  getMessageTemplates,
-  deleteMessageTemplate,
 };

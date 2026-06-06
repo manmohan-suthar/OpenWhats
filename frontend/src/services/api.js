@@ -117,6 +117,57 @@ export const api = {
     return parseResponse(res);
   },
 
+  async getSessionGroups(id) {
+    const res = await fetch(`${API_URL}/sessions/${id}/groups`, {
+      headers: headers(),
+    });
+    return parseResponse(res);
+  },
+
+  async getGroupParticipants(sessionId, groupJid) {
+    const res = await fetch(
+      `${API_URL}/sessions/${sessionId}/groups/${encodeURIComponent(groupJid)}/participants`,
+      { headers: headers() },
+    );
+    return parseResponse(res);
+  },
+
+  async importGroupToNumberList(sessionId, groupJid, name = "") {
+    const res = await fetch(
+      `${API_URL}/sessions/${sessionId}/groups/${encodeURIComponent(groupJid)}/import-number-list`,
+      {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ name }),
+      },
+    );
+    return parseResponse(res);
+  },
+
+  async downloadGroupParticipants(sessionId, groupJid, format = "csv") {
+    const res = await fetch(
+      `${API_URL}/sessions/${sessionId}/groups/${encodeURIComponent(groupJid)}/export?format=${encodeURIComponent(format)}`,
+      { headers: headers() },
+    );
+
+    if (!res.ok) {
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to download group participants");
+      }
+      throw new Error("Failed to download group participants");
+    }
+
+    const blob = await res.blob();
+    const disposition = res.headers.get("content-disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/i);
+    return {
+      blob,
+      filename: match?.[1] || `group-participants.${format}`,
+    };
+  },
+
   async reconnectSession(id) {
     const res = await fetch(`${API_URL}/sessions/${id}/reconnect`, {
       method: "POST",

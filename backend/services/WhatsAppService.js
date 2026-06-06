@@ -410,6 +410,251 @@ class WhatsAppService {
     return !!this.sockets.get(sessionId)?.user?.id;
   }
 
+  async getSessionGroups(sessionId) {
+    const sock = this.sockets.get(sessionId);
+
+    if (!sock?.user?.id) {
+      this.scheduleReconnect(sessionId, {
+        delayMs: 1000,
+        reason: "group_list_offline",
+      });
+      const err = new Error("Session is not connected");
+      err.statusCode = 503;
+      err.code = "SESSION_OFFLINE";
+      throw err;
+    }
+
+    if (typeof sock.groupFetchAllParticipating !== "function") {
+      const err = new Error("Group listing is not supported by this socket");
+      err.statusCode = 501;
+      err.code = "GROUP_LIST_UNSUPPORTED";
+      throw err;
+    }
+
+    const groupMap = await sock.groupFetchAllParticipating();
+    const groups = Object.entries(groupMap || {}).map(([jid, group]) => {
+      const participants = Array.isArray(group?.participants)
+        ? group.participants
+        : [];
+
+      return {
+        jid: group?.id || jid,
+        id: group?.id || jid,
+        subject: group?.subject || "Unnamed group",
+        name: group?.subject || "Unnamed group",
+        owner: group?.owner || "",
+        desc: group?.desc || "",
+        participantsCount:
+          Number(group?.size || group?.participantsCount) ||
+          participants.length ||
+          0,
+        announce: !!group?.announce,
+        restrict: !!group?.restrict,
+        createdAt: group?.creation
+          ? new Date(Number(group.creation) * 1000).toISOString()
+          : null,
+      };
+    });
+
+    return groups.sort((a, b) => a.subject.localeCompare(b.subject));
+  }
+
+  normalizeGroupJid(groupJid) {
+    const value = String(groupJid || "").trim();
+    if (!value) {
+      throw new Error("Group JID is required");
+    }
+
+    const decoded = decodeURIComponent(value);
+    if (!decoded.endsWith("@g.us")) {
+      const err = new Error("Invalid group JID");
+      err.statusCode = 400;
+      err.code = "INVALID_GROUP_JID";
+      throw err;
+    }
+
+    return decoded;
+  }
+
+  isLidJid(value) {
+    return /@lid(?::\d+)?$/i.test(String(value || "").trim());
+  }
+
+  extractRealPhoneNumber(value) {
+    const text = String(value || "").trim();
+    if (!text || this.isLidJid(text)) {
+      return "";
+    }
+
+    if (text.includes("@") && !/@(s\.whatsapp\.net|c\.us)(:\d+)?$/i.test(text)) {
+      return "";
+    }
+
+    const userPart = text.includes("@") ? text.split("@")[0] : text;
+    const digits = userPart.split(":")[0].replace(/\D/g, "");
+    if (digits.length < 7 || digits.length > 16) {
+      return "";
+    }
+
+    return digits;
+  }
+
+  async resolveParticipantPhoneNumber(sock, participantJid, fallbackValue = "") {
+    const directPhone =
+      this.extractRealPhoneNumber(participantJid) ||
+      this.extractRealPhoneNumber(fallbackValue);
+
+    if (directPhone) {
+      const sourceJid = String(participantJid || fallbackValue || "").trim();
+      return {
+        phoneNumber: directPhone,
+        phoneJid: sourceJid.includes("@")
+          ? sourceJid
+          : `${directPhone}@s.whatsapp.net`,
+        resolvedFromLid: false,
+      };
+    }
+
+    if (!this.isLidJid(participantJid) || typeof sock.findUserId !== "function") {
+      return { phoneNumber: "", phoneJid: "", resolvedFromLid: false };
+    }
+
+    try {
+      const ids = await sock.findUserId(participantJid);
+      const phoneJid = ids?.phoneNumber || ids?.pn || "";
+      const phoneNumber = this.extractRealPhoneNumber(phoneJid);
+
+      return {
+        phoneNumber,
+        phoneJid: phoneNumber ? phoneJid : "",
+        resolvedFromLid: Boolean(phoneNumber),
+      };
+    } catch (err) {
+      console.warn("[WA GROUP] Failed to resolve LID participant", {
+        participantJid,
+        error: err?.message || err,
+      });
+      return { phoneNumber: "", phoneJid: "", resolvedFromLid: false };
+    }
+  }
+
+  getParticipantAdminRole(participant, participantJid, groupOwner = "") {
+    const explicitRole = String(participant?.admin || participant?.role || "")
+      .trim()
+      .toLowerCase();
+    if (explicitRole === "superadmin" || explicitRole === "super admin") {
+      return "superadmin";
+    }
+    if (explicitRole === "admin") {
+      return "admin";
+    }
+    if (participant?.isSuperAdmin || participant?.superadmin) {
+      return "superadmin";
+    }
+    if (participant?.isAdmin || participant?.admin === true) {
+      return "admin";
+    }
+
+    const owner = String(groupOwner || "").split(":")[0];
+    const current = String(participantJid || "").split(":")[0];
+    if (owner && current && owner === current) {
+      return "superadmin";
+    }
+
+    return "";
+  }
+
+  async getGroupParticipants(sessionId, groupJid) {
+    const sock = this.sockets.get(sessionId);
+
+    if (!sock?.user?.id) {
+      this.scheduleReconnect(sessionId, {
+        delayMs: 1000,
+        reason: "group_participants_offline",
+      });
+      const err = new Error("Session is not connected");
+      err.statusCode = 503;
+      err.code = "SESSION_OFFLINE";
+      throw err;
+    }
+
+    const jid = this.normalizeGroupJid(groupJid);
+    let metadata = null;
+
+    if (typeof sock.groupMetadata === "function") {
+      metadata = await sock.groupMetadata(jid).catch(() => null);
+    }
+
+    if (!metadata && typeof sock.groupFetchAllParticipating === "function") {
+      const groupMap = await sock.groupFetchAllParticipating();
+      metadata = groupMap?.[jid] || null;
+    }
+
+    if (!metadata) {
+      const err = new Error("Group not found for this session");
+      err.statusCode = 404;
+      err.code = "GROUP_NOT_FOUND";
+      throw err;
+    }
+
+    const participants = Array.isArray(metadata.participants)
+      ? metadata.participants
+      : [];
+    const normalizedParticipants = await Promise.all(
+      participants.map(async (participant, index) => {
+        const participantJid = String(
+          participant?.id || participant?.jid || participant?.phoneNumber || "",
+        ).trim();
+        const phoneSource =
+          participant?.phoneNumber && participant?.phoneNumber !== participantJid
+            ? participant.phoneNumber
+            : "";
+        const resolved = await this.resolveParticipantPhoneNumber(
+          sock,
+          participantJid,
+          phoneSource,
+        );
+        const canExport = Boolean(resolved.phoneNumber);
+
+        return {
+          index: index + 1,
+          jid: resolved.phoneJid || "",
+          sourceJid: participantJid,
+          phoneNumber: resolved.phoneNumber,
+          name:
+            participant?.name ||
+            participant?.notify ||
+            participant?.verifiedName ||
+            "",
+          admin: this.getParticipantAdminRole(
+            participant,
+            participantJid,
+            metadata?.owner,
+          ),
+          canExport,
+          unresolvedReason: canExport
+            ? ""
+            : this.isLidJid(participantJid)
+              ? "lid_unresolved"
+              : "no_phone_number",
+        };
+      }),
+    );
+    const exportableParticipants = normalizedParticipants.filter(
+      (participant) => participant.canExport,
+    );
+
+    return {
+      jid,
+      subject: metadata.subject || "Unnamed group",
+      totalParticipants: participants.length,
+      resolvedParticipantsCount: exportableParticipants.length,
+      unresolvedParticipantsCount:
+        participants.length - exportableParticipants.length,
+      participants: exportableParticipants,
+    };
+  }
+
   startHeartbeat(sessionId, sock) {
     this.clearHeartbeat(sessionId);
     console.log("[WA HEARTBEAT] started", {
