@@ -10,12 +10,15 @@ import {
   DisconnectReason,
   fetchLatestBaileysVersion,
   Browsers,
+  downloadMediaMessage,
 } from "@itsliaaa/baileys";
 import { Boom } from "@hapi/boom";
 import mongoose from "mongoose";
+import bcrypt from "bcryptjs";
 import * as qrcode from "qrcode";
 import {
   writeFileSync,
+  appendFileSync,
   existsSync,
   mkdirSync,
   rmSync,
@@ -24,6 +27,7 @@ import {
 } from "fs";
 import { join, dirname, basename } from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
 import {
   WhatsAppSession as SessionModel,
   Message,
@@ -32,6 +36,18 @@ import {
 } from "../models/index.js";
 import { handleIncomingMessage } from "./AiAgentService.js";
 import { executeFlowOnMessage } from "../controllers/flowExecutionController.js";
+import PartnerTenantService from "./PartnerTenantService.js";
+import PartnerWebhookService from "./PartnerWebhookService.js";
+import {
+  publishPartnerMessageReceivedEvent,
+  publishPartnerMessageSentEvent,
+} from "./PartnerMessageEventService.js";
+import {
+  extractInteractiveResponse,
+  interactiveResponseText,
+  unwrapMessageContent,
+} from "../utils/interactiveResponse.js";
+import { createBaileysLogger } from "../utils/baileysLogger.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -67,6 +83,8 @@ class WhatsAppService {
     this.reconnectCooldown = new Map(); // Tracks last reconnect time per session
     this.reconnectTimers = new Map(); // Tracks scheduled reconnect timers per session
     this.activeSockets = new Set(); // Tracks currently active socket connections
+    this.duplicateRejectedSessions = new Set();
+    this.historyRequestCooldowns = new Map();
 
     if (!existsSync(SESSIONS_DIR)) mkdirSync(SESSIONS_DIR, { recursive: true });
   }
@@ -256,10 +274,10 @@ class WhatsAppService {
 
     const allowedTransitions = {
       pending: ["connecting", "disconnected", "failed"],
-      connecting: ["connected", "disconnected", "failed"],
+      connecting: ["pending", "connected", "disconnected", "failed"],
       connected: ["connecting", "disconnected", "failed"],
-      disconnected: ["connecting", "failed"],
-      failed: ["connecting", "disconnected"],
+      disconnected: ["pending", "connecting", "failed"],
+      failed: ["pending", "connecting", "disconnected"],
     };
 
     return (allowedTransitions[currentStatus] || []).includes(nextStatus);
@@ -285,7 +303,32 @@ class WhatsAppService {
       ...patch,
     };
 
-    await SessionModel.updateOne({ sessionId }, updateData).catch(() => {});
+    const updatedSession = await SessionModel.findOneAndUpdate(
+      { sessionId, status: session.status },
+      { $set: updateData },
+      { new: true },
+    ).lean();
+    if (!updatedSession) {
+      return {
+        skipped: true,
+        sessionId,
+        currentStatus: session.status,
+        requestedStatus: status,
+        reason: "concurrent_transition",
+      };
+    }
+    PartnerWebhookService.enqueueForUser(
+      session.userId,
+      "whatsapp.session.status",
+      {
+        sessionId,
+        status,
+        phoneNumber: patch.phoneNumber || session.phoneNumber || "",
+        lastConnected: patch.lastConnected || session.lastConnected || null,
+      },
+    ).catch((error) =>
+      console.error("[PARTNER WEBHOOK] session event failed:", error.message),
+    );
     const emitted = await this.emitSessionUpdate(sessionId, updateData);
     if (!emitted) {
       await this.emitSessionUpdate(sessionId, updateData);
@@ -323,20 +366,19 @@ class WhatsAppService {
   }
 
   extractIncomingText(message) {
-    const payload = message?.message;
-    if (!payload) return "";
-
-    const unwrapped = payload.ephemeralMessage?.message || payload;
+    const unwrapped = unwrapMessageContent(message);
+    const interactionText = interactiveResponseText(
+      extractInteractiveResponse(message),
+    );
     const candidates = [
+      interactionText,
       unwrapped.conversation,
       unwrapped.extendedTextMessage?.text,
       unwrapped.imageMessage?.caption,
       unwrapped.videoMessage?.caption,
       unwrapped.documentMessage?.caption,
-      unwrapped.buttonsResponseMessage?.selectedButtonId,
-      unwrapped.listResponseMessage?.singleSelectReply?.selectedRowId,
-      unwrapped.templateButtonReplyMessage?.selectedId,
-      unwrapped.interactiveResponseMessage?.body?.text,
+      unwrapped.interactiveMessage?.body?.text,
+      unwrapped.listMessage?.description,
     ];
 
     for (const candidate of candidates) {
@@ -410,6 +452,210 @@ class WhatsAppService {
     return !!this.sockets.get(sessionId)?.user?.id;
   }
 
+  getSocket(sessionId) {
+    return this.sockets.get(sessionId) || null;
+  }
+
+  historyArchivePath(sessionId, chatJid) {
+    const archiveDir = join(SESSIONS_DIR, sessionId, "history");
+    if (!existsSync(archiveDir)) mkdirSync(archiveDir, { recursive: true });
+    const fileName = Buffer.from(String(chatJid)).toString("base64url");
+    return join(archiveDir, `${fileName}.ndjson`);
+  }
+
+  normalizeArchivedMessage(message) {
+    const chatJid = message?.key?.remoteJid;
+    if (!chatJid || !message?.key?.id || !message?.message) return null;
+    const content =
+      message.message?.ephemeralMessage?.message ||
+      message.message?.viewOnceMessage?.message ||
+      message.message;
+    const text =
+      content?.conversation ||
+      content?.extendedTextMessage?.text ||
+      content?.imageMessage?.caption ||
+      content?.videoMessage?.caption ||
+      content?.documentMessage?.caption ||
+      "";
+    const mediaType = content?.imageMessage
+      ? "image"
+      : content?.videoMessage
+        ? "video"
+        : content?.documentMessage
+          ? "document"
+          : content?.audioMessage
+            ? "audio"
+            : null;
+    const timestamp = message.messageTimestamp
+      ? new Date(Number(message.messageTimestamp) * 1000)
+      : new Date();
+    return {
+      messageId: message.key.id,
+      chatJid,
+      text,
+      direction: message.key.fromMe ? "out" : "in",
+      status: message.key.fromMe
+        ? { 0: "failed", 1: "pending", 2: "sent", 3: "delivered", 4: "read", 5: "read" }[
+            Number(message.status)
+          ] || "sent"
+        : "delivered",
+      mediaType,
+      mediaName:
+        content?.documentMessage?.fileName ||
+        content?.audioMessage?.fileName ||
+        null,
+      sourceMessage: mediaType ? message : undefined,
+      timestamp: timestamp.toISOString(),
+    };
+  }
+
+  reviveArchivedBuffers(value) {
+    if (!value || typeof value !== "object") return value;
+    if (
+      value.type === "Buffer" &&
+      Array.isArray(value.data)
+    ) {
+      return Buffer.from(value.data);
+    }
+    for (const key of Object.keys(value)) {
+      value[key] = this.reviveArchivedBuffers(value[key]);
+    }
+    return value;
+  }
+
+  async storeMessageMedia(message, mediaType, mediaName = "", userId = "") {
+    if (!message || !mediaType) return null;
+    const buffer = await downloadMediaMessage(message, "buffer", {});
+    const extensionFromName = String(mediaName).match(/\.[a-zA-Z0-9]{1,8}$/)?.[0];
+    const defaultExtension = {
+      image: ".jpg",
+      video: ".mp4",
+      audio: ".ogg",
+      document: ".bin",
+    }[mediaType] || ".bin";
+    const fileName = `${randomUUID()}${extensionFromName || defaultExtension}`;
+    const partnerTenant = userId
+      ? await PartnerTenantService.findForUser(userId)
+      : null;
+    const normalizedUserId = String(userId || "");
+    const uploadDir =
+      partnerTenant && /^[a-f0-9]{24}$/i.test(normalizedUserId)
+        ? join(process.cwd(), "uploads", "private", normalizedUserId)
+        : join(process.cwd(), "uploads");
+    if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
+    writeFileSync(join(uploadDir, fileName), buffer);
+    return partnerTenant
+      ? `/uploads/private/${normalizedUserId}/${fileName}`
+      : `/uploads/${fileName}`;
+  }
+
+  async materializeArchivedMedia(row, userId = "") {
+    if (!row?.sourceMessage || !row?.mediaType) return null;
+    try {
+      return await this.storeMessageMedia(
+        this.reviveArchivedBuffers(row.sourceMessage),
+        row.mediaType,
+        row.mediaName,
+        userId,
+      );
+    } catch (error) {
+      console.warn("[WA MEDIA] archived media download failed", {
+        messageId: row.messageId,
+        error: error?.message || String(error),
+      });
+      return null;
+    }
+  }
+
+  archiveHistoryMessages(sessionId, messages = []) {
+    const rowsByChat = new Map();
+    for (const message of messages) {
+      const row = this.normalizeArchivedMessage(message);
+      if (!row) continue;
+      if (!rowsByChat.has(row.chatJid)) rowsByChat.set(row.chatJid, []);
+      rowsByChat.get(row.chatJid).push(row);
+    }
+    for (const [chatJid, rows] of rowsByChat) {
+      appendFileSync(
+        this.historyArchivePath(sessionId, chatJid),
+        `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
+        "utf8",
+      );
+    }
+  }
+
+  async loadChatHistory(sessionId, chatJid, limit = 30, before = null) {
+    const filePath = this.historyArchivePath(sessionId, chatJid);
+    if (!existsSync(filePath)) return [];
+    const beforeTime = before ? new Date(before).getTime() : Infinity;
+    const unique = new Map();
+    for (const line of readFileSync(filePath, "utf8").split("\n")) {
+      if (!line) continue;
+      try {
+        const row = JSON.parse(line);
+        const time = new Date(row.timestamp).getTime();
+        if (Number.isFinite(time) && time < beforeTime) {
+          unique.set(row.messageId, row);
+        }
+      } catch {}
+    }
+    return [...unique.values()]
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+      .slice(0, Math.min(Math.max(Number(limit) || 30, 1), 100));
+  }
+
+  async requestChatHistory(sessionId, chatJid, count, anchor) {
+    const sock = this.sockets.get(sessionId);
+    if (
+      !sock?.user?.id ||
+      typeof sock.fetchMessageHistory !== "function" ||
+      !anchor?.messageId
+    ) {
+      return false;
+    }
+    const cooldownKey = `${sessionId}:${chatJid}`;
+    const lastRequest = this.historyRequestCooldowns.get(cooldownKey) || 0;
+    if (Date.now() - lastRequest < 30_000) return false;
+    this.historyRequestCooldowns.set(cooldownKey, Date.now());
+    await sock.fetchMessageHistory(
+      Math.min(Math.max(Number(count) || 30, 1), 100),
+      {
+        remoteJid: chatJid,
+        id: anchor.messageId,
+        fromMe: anchor.direction === "out",
+      },
+      Math.floor(new Date(anchor.timestamp).getTime() / 1000),
+    );
+    return true;
+  }
+
+  async getCachedSessionGroups(sessionId) {
+    const session = await SessionModel.findOne({ sessionId })
+      .select("userId")
+      .lean();
+    if (!session?.userId) return [];
+    const rows = await WaChat.find({
+      userId: session.userId,
+      sessionId,
+      chatJid: { $regex: /@g\.us$/ },
+    })
+      .sort({ lastMessageTime: -1 })
+      .lean();
+    return rows.map((row) => ({
+      jid: row.chatJid,
+      id: row.chatJid,
+      subject: row.contactName || row.name || "WhatsApp group",
+      name: row.contactName || row.name || "WhatsApp group",
+      owner: "",
+      desc: "",
+      participantsCount: Number(row.participantsCount || 0),
+      announce: false,
+      restrict: false,
+      createdAt: null,
+      cached: true,
+    }));
+  }
+
   async getSessionGroups(sessionId) {
     const sock = this.sockets.get(sessionId);
 
@@ -418,10 +664,7 @@ class WhatsAppService {
         delayMs: 1000,
         reason: "group_list_offline",
       });
-      const err = new Error("Session is not connected");
-      err.statusCode = 503;
-      err.code = "SESSION_OFFLINE";
-      throw err;
+      return this.getCachedSessionGroups(sessionId);
     }
 
     if (typeof sock.groupFetchAllParticipating !== "function") {
@@ -431,7 +674,16 @@ class WhatsAppService {
       throw err;
     }
 
-    const groupMap = await sock.groupFetchAllParticipating();
+    let groupMap;
+    try {
+      groupMap = await sock.groupFetchAllParticipating();
+    } catch (error) {
+      console.warn("[WA GROUPS] live fetch failed; using cached groups", {
+        sessionId,
+        error: error?.message || String(error),
+      });
+      return this.getCachedSessionGroups(sessionId);
+    }
     const groups = Object.entries(groupMap || {}).map(([jid, group]) => {
       const participants = Array.isArray(group?.participants)
         ? group.participants
@@ -457,6 +709,66 @@ class WhatsAppService {
     });
 
     return groups.sort((a, b) => a.subject.localeCompare(b.subject));
+  }
+
+  /**
+   * Create a new WhatsApp group using a connected session.
+   * @param {string} sessionId - The session to create the group from
+   * @param {string} subject - Group name / subject (max 25 chars enforced by WA)
+   * @param {string[]} participants - Array of phone numbers (e.g. "+919876543210")
+   * @returns {{ groupJid: string, subject: string, participants: object[] }}
+   */
+  async createGroup(sessionId, subject, participants) {
+    const sock = this.sockets.get(sessionId);
+
+    if (!sock?.user?.id) {
+      const err = new Error(
+        "Session is not connected. Please connect the session first.",
+      );
+      err.statusCode = 409;
+      err.code = "SESSION_NOT_CONNECTED";
+      throw err;
+    }
+
+    if (typeof sock.groupCreate !== "function") {
+      const err = new Error("Group creation is not supported by this session");
+      err.statusCode = 501;
+      err.code = "GROUP_CREATE_UNSUPPORTED";
+      throw err;
+    }
+
+    // Convert phone numbers to WhatsApp JIDs
+    const participantJids = participants.map((num) => {
+      const digits = String(num).replace(/\D/g, "");
+      return `${digits}@s.whatsapp.net`;
+    });
+
+    try {
+      const result = await sock.groupCreate(subject, participantJids);
+
+      return {
+        groupJid: result?.id || result?.gid || null,
+        subject: result?.subject || subject,
+        participants: Array.isArray(result?.participants)
+          ? result.participants
+          : participantJids.map((jid) => ({ id: jid, admin: null })),
+        size: participantJids.length + 1, // +1 for creator
+      };
+    } catch (error) {
+      console.error("[WA GROUP CREATE] Error:", {
+        sessionId,
+        subject,
+        participantCount: participants.length,
+        error: error?.message || String(error),
+      });
+
+      const err = new Error(
+        error?.message || "Failed to create WhatsApp group",
+      );
+      err.statusCode = error?.statusCode || 500;
+      err.code = error?.code || "GROUP_CREATE_FAILED";
+      throw err;
+    }
   }
 
   normalizeGroupJid(groupJid) {
@@ -781,12 +1093,13 @@ class WhatsAppService {
     const sock = makeWASocket({
       auth: authState.state,
       version,
+      logger: createBaileysLogger(sessionId),
       printQRInTerminal: false,
       browser: Browsers.ubuntu("Chrome"),
       markOnlineOnConnect: false,
       emitOwnEvents: false,
-      fireInitQueries: false,
-      syncFullHistory: false,
+      fireInitQueries: true,
+      syncFullHistory: true,
       connectTimeoutMs: 60000,
       defaultQueryTimeoutMs: 60000,
       keepAliveIntervalMs: 15000,
@@ -912,6 +1225,119 @@ class WhatsAppService {
           registered: !!authState.state.creds?.registered,
         });
 
+        // A session is permanently bound to the first WhatsApp number that
+        // successfully connected to it. Re-pairing must use that same number;
+        // otherwise users could silently replace A with B and mix chat data.
+        const boundSession = await SessionModel.findOne({ sessionId })
+          .select("phoneNumber")
+          .lean();
+        const boundPhone = String(boundSession?.phoneNumber || "").replace(
+          /\D/g,
+          "",
+        );
+        if (boundPhone && phone && boundPhone !== phone) {
+          const mismatchError =
+            `This session is linked to +${boundPhone}. Scan WhatsApp for that number only.`;
+          console.warn("[WA SESSION] bound number mismatch rejected", {
+            sessionId,
+            boundPhone,
+            scannedPhone: phone,
+          });
+          this.duplicateRejectedSessions.add(sessionId);
+          this.clearReconnectTimer(sessionId);
+          this.pendingReconnects.delete(sessionId);
+          this.activeSockets.delete(sessionId);
+          this.clearHeartbeat(sessionId);
+          await this.handleSessionStateChange(sessionId, "failed", {
+            // Never overwrite the permanent binding with the rejected number.
+            phoneNumber: boundPhone,
+            lastError: mismatchError,
+            errorCode: "SESSION_PHONE_MISMATCH",
+          });
+          this.emitSessionUpdate(sessionId, {
+            status: "failed",
+            phoneNumber: boundPhone,
+            error: mismatchError,
+            errorCode: "SESSION_PHONE_MISMATCH",
+          });
+          try {
+            await sock.logout();
+          } catch (_) {
+            try {
+              sock.end(new Error(mismatchError));
+            } catch (_) {}
+          }
+          this.removeSocket(sessionId);
+          // These credentials belong to the rejected number B. Remove them so
+          // the next retry presents a clean QR for the bound number A.
+          await this.removeSessionFiles(sessionId);
+          return;
+        }
+
+        // Fast path: reject against an already-live socket immediately. This
+        // prevents the new session appearing connected while Mongo is queried.
+        const duplicateLiveSession = phone
+          ? [...this.sockets.entries()].find(([otherSessionId, otherSocket]) => {
+              if (otherSessionId === sessionId) return false;
+              if (otherSocket?.ws?.readyState !== 1) return false;
+              const otherPhone = (otherSocket?.user?.id || "")
+                .split("@")[0]
+                .split(":")[0];
+              return otherPhone === phone;
+            })
+          : null;
+        const duplicateSession = duplicateLiveSession
+          ? { sessionId: duplicateLiveSession[0], name: "" }
+          : phone
+            ? await SessionModel.findOne({
+                sessionId: { $ne: sessionId },
+                phoneNumber: phone,
+                // "connecting" is not proof that this number owns a live
+                // WhatsApp transport; stale recovery rows must not block it.
+                status: "connected",
+              })
+                .select("sessionId name")
+                .lean()
+            : null;
+        if (duplicateSession) {
+          const duplicateError =
+            "This WhatsApp number is already active in another session";
+          console.warn("[WA SESSION] duplicate active number rejected", {
+            sessionId,
+            phone,
+            existingSessionId: duplicateSession.sessionId,
+          });
+          this.duplicateRejectedSessions.add(sessionId);
+          this.clearReconnectTimer(sessionId);
+          this.pendingReconnects.delete(sessionId);
+          this.activeSockets.delete(sessionId);
+          this.clearHeartbeat(sessionId);
+          await this.handleSessionStateChange(sessionId, "failed", {
+            // A duplicate rejection is not a successful first connection and
+            // therefore must not establish or replace the permanent binding.
+            phoneNumber: boundPhone || "",
+            lastError: duplicateError,
+            errorCode: "DUPLICATE_ACTIVE_NUMBER",
+          });
+          this.emitSessionUpdate(sessionId, {
+            status: "failed",
+            phoneNumber: boundPhone || "",
+            error: duplicateError,
+            errorCode: "DUPLICATE_ACTIVE_NUMBER",
+          });
+          try {
+            await sock.logout();
+          } catch (_) {
+            try {
+              sock.end(new Error(duplicateError));
+            } catch (_) {}
+          }
+          this.removeSocket(sessionId);
+          // Keep credentials. Once the genuinely active session is removed or
+          // disconnected, the user can retry without scanning a new QR.
+          return;
+        }
+
         this.pendingQRCodes.delete(sessionId);
         this.reconnectAttempts.delete(sessionId);
         this.reconnectCooldown.delete(sessionId); // Reset cooldown on successful connection
@@ -920,11 +1346,22 @@ class WhatsAppService {
         await this.handleSessionStateChange(sessionId, "connected", {
           phoneNumber: phone,
           lastConnected: new Date(),
+          lastError: null,
+          errorCode: null,
         });
         this.startHeartbeat(sessionId, sock);
       }
 
       if (connection === "close") {
+        if (this.duplicateRejectedSessions.has(sessionId)) {
+          this.duplicateRejectedSessions.delete(sessionId);
+          this.clearReconnectTimer(sessionId);
+          this.pendingReconnects.delete(sessionId);
+          this.activeSockets.delete(sessionId);
+          this.clearHeartbeat(sessionId);
+          this.removeSocket(sessionId);
+          return;
+        }
         if (isLoggingOut) {
           this.clearHeartbeat(sessionId);
           return;
@@ -1100,29 +1537,272 @@ class WhatsAppService {
     });
 
     const sessionRecord = await SessionModel.findOne({ sessionId })
-      .select("userId")
+      .select("userId phoneNumber")
       .lean();
     const userId = sessionRecord?.userId?.toString() || null;
+    let partnerTenant = userId
+      ? await PartnerTenantService.findForUser(userId)
+      : null;
+
+    sock.ev.on("messaging-history.set", async ({ chats = [], contacts = [], messages = [] }) => {
+      if (!userId) return;
+      try {
+        // Keep the provider history out of the primary message database.
+        // Requested pages are materialized only when the user scrolls back.
+        this.archiveHistoryMessages(sessionId, messages);
+        const contactNames = new Map(
+          contacts
+            .filter((contact) => contact?.id)
+            .map((contact) => [
+              contact.id,
+              contact.name || contact.notify || contact.verifiedName || "",
+            ]),
+        );
+        const lastMessageByJid = new Map();
+        for (const message of messages) {
+          const remoteJid = message?.key?.remoteJid;
+          if (!remoteJid || remoteJid === "status@broadcast") continue;
+          const timestamp = Number(message.messageTimestamp || 0);
+          const existing = lastMessageByJid.get(remoteJid);
+          if (!existing || timestamp >= existing.timestamp) {
+            lastMessageByJid.set(remoteJid, { message, timestamp });
+          }
+        }
+
+        await Promise.all(
+          chats.map(async (chat) => {
+            const chatJid = chat?.id;
+            if (!chatJid || chatJid === "status@broadcast") return;
+            const latest = lastMessageByJid.get(chatJid)?.message;
+            const lastMessage = latest ? this.extractIncomingText(latest) : "";
+            const rawTimestamp =
+              Number(chat.conversationTimestamp || 0) ||
+              Number(latest?.messageTimestamp || 0);
+            await WaChat.findOneAndUpdate(
+              { userId, sessionId, chatJid },
+              {
+                $set: {
+                  phoneNumber: chatJid.endsWith("@lid")
+                    ? chatJid
+                    : chatJid.split("@")[0],
+                  contactName:
+                    chat.name ||
+                    contactNames.get(chatJid) ||
+                    latest?.pushName ||
+                    "",
+                  ...(lastMessage ? { lastMessage } : {}),
+                  ...(rawTimestamp
+                    ? { lastMessageTime: new Date(rawTimestamp * 1000) }
+                    : {}),
+                  unreadCount: Math.max(0, Number(chat.unreadCount || 0)),
+                },
+              },
+              { upsert: true },
+            );
+          }),
+        );
+
+        if (this.io) {
+          this.io.to(sessionId).emit("chat:synced", {
+            sessionId,
+            count: chats.length,
+          });
+        }
+      } catch (error) {
+        console.error("[WA CHAT SYNC] history import failed:", error.message);
+      }
+    });
 
     sock.ev.on("messages.upsert", async ({ messages = [], type }) => {
       if (type && type !== "notify") return;
 
       for (const msg of messages) {
         try {
-          if (!msg?.message || msg.key?.fromMe) continue;
+          if (!msg?.message) continue;
 
           const remoteJid = msg.key?.remoteJid;
           if (!remoteJid || remoteJid === "status@broadcast") continue;
-          if (remoteJid.endsWith("@g.us")) continue;
+          const isFromMe = msg.key?.fromMe === true;
 
+          const interaction = extractInteractiveResponse(msg);
           const text = this.extractIncomingText(msg);
-          if (!text) continue;
+          const content = unwrapMessageContent(msg);
+          const isInteractiveMessage = Boolean(
+            interaction || content?.interactiveMessage || content?.listMessage,
+          );
+          const mediaType = content?.imageMessage
+            ? "image"
+            : content?.videoMessage
+              ? "video"
+              : content?.documentMessage
+                ? "document"
+                : content?.audioMessage
+                  ? "audio"
+                  : null;
+          if (!text && !mediaType && !interaction) continue;
+          const timestamp = msg.messageTimestamp
+            ? new Date(Number(msg.messageTimestamp) * 1000)
+            : new Date();
+          const messageId =
+            msg.key?.id || `${isFromMe ? "out" : "in"}-${Date.now()}`;
+          const participantJid = msg.key?.participant || null;
+          let mediaUrl = null;
+          if (mediaType) {
+            try {
+              mediaUrl = await this.storeMessageMedia(
+                msg,
+                mediaType,
+                content?.documentMessage?.fileName || "",
+                userId,
+              );
+            } catch (error) {
+              console.warn("[WA MEDIA] message media download failed", {
+                sessionId,
+                messageId,
+                error: error?.message || String(error),
+              });
+            }
+          }
 
-          console.log("[WA MESSAGE] incoming text", {
+          console.log("[WA MESSAGE] chat event", {
             sessionId,
             remoteJid,
+            direction: isFromMe ? "out" : "in",
             text: text.slice(0, 80),
           });
+
+          if (userId) {
+            const messageWrite = await WaChatMessage.updateOne(
+              { messageId, sessionId },
+              {
+                $setOnInsert: {
+                  userId,
+                  sessionId,
+                  chatJid: remoteJid,
+                  messageId,
+                  text,
+                  direction: isFromMe ? "out" : "in",
+                  status: isFromMe ? "sent" : "delivered",
+                  mediaType,
+                  mediaUrl,
+                  mediaName:
+                    content?.documentMessage?.fileName ||
+                    content?.audioMessage?.fileName ||
+                    null,
+                  messageType: isInteractiveMessage
+                    ? "interactive"
+                    : mediaType
+                      ? "media"
+                      : "text",
+                  interactive: interaction,
+                  timestamp,
+                },
+              },
+              { upsert: true },
+            );
+            const messageInserted = Number(messageWrite.upsertedCount || 0) > 0;
+            if (messageInserted) {
+              const chatUpdate = {
+                $set: {
+                  phoneNumber: remoteJid.endsWith("@lid")
+                    ? remoteJid
+                    : remoteJid.split("@")[0],
+                  ...(!isFromMe && msg.pushName
+                    ? { contactName: msg.pushName }
+                    : {}),
+                  lastMessage: text || `[${mediaType}]`,
+                  lastMessageTime: timestamp,
+                },
+                ...(!isFromMe ? { $inc: { unreadCount: 1 } } : {}),
+              };
+              await WaChat.findOneAndUpdate(
+                { userId, sessionId, chatJid: remoteJid },
+                chatUpdate,
+                { upsert: true },
+              );
+            }
+          }
+
+          // Partner tenants use DeskGo's AI and workflow engine. OpenWhats
+          // only persists/delivers the real chat event and must not auto-reply.
+          if (!partnerTenant && userId) {
+            partnerTenant = await PartnerTenantService.findForUser(userId);
+          }
+          if (partnerTenant) {
+            if (isFromMe) {
+              await publishPartnerMessageSentEvent({
+                userId,
+                sessionId,
+                messageId,
+              });
+              continue;
+            }
+            await publishPartnerMessageReceivedEvent({
+              userId,
+              sessionId,
+              messageId,
+              eventType: interaction
+                ? "whatsapp.interactive.response"
+                : "whatsapp.message.received",
+              data: {
+                session: {
+                  sessionId,
+                  phoneNumber: sessionRecord?.phoneNumber || "",
+                },
+                chat: {
+                  chatJid: remoteJid,
+                  isGroup: remoteJid.endsWith("@g.us"),
+                  participantJid,
+                },
+                contact: {
+                  phoneNumber: (participantJid || remoteJid).split("@")[0],
+                  displayName: msg.pushName || "",
+                },
+                message: {
+                  messageId,
+                  direction: isFromMe ? "out" : "in",
+                  type: isInteractiveMessage
+                    ? "interactive"
+                    : mediaType || "text",
+                  text,
+                  timestamp: timestamp.toISOString(),
+                  ...(mediaType
+                    ? {
+                        media: {
+                          type: mediaType,
+                          url: mediaUrl,
+                          name:
+                            content?.documentMessage?.fileName ||
+                            content?.audioMessage?.fileName ||
+                            null,
+                          caption: text || "",
+                        },
+                      }
+                    : {}),
+                },
+                ...(interaction
+                  ? {
+                      interaction: {
+                        type: interaction.type,
+                        actionId: interaction.actionId,
+                        label: interaction.label,
+                        description: interaction.description || "",
+                        params: interaction.params || {},
+                        rawType: interaction.rawType,
+                        originalMessageId:
+                          interaction.originalMessageId || null,
+                      },
+                    }
+                  : {}),
+              },
+            });
+            continue;
+          }
+
+          // Messages manually sent from the linked WhatsApp phone must be
+          // mirrored to DeskGo, but must never trigger an incoming-message AI
+          // workflow or auto reply.
+          if (isFromMe) continue;
 
           if (userId) {
             const flowResult = await executeFlowOnMessage(
@@ -1152,6 +1832,61 @@ class WhatsAppService {
       }
     });
 
+    sock.ev.on("messages.update", async (updates = []) => {
+      if (!userId) return;
+      // A tenant may be provisioned after this socket was created. Refresh the
+      // association instead of permanently dropping delivery receipts.
+      if (!partnerTenant) {
+        partnerTenant = await PartnerTenantService.findForUser(userId);
+      }
+      const statusNames = {
+        0: "failed",
+        1: "pending",
+        2: "sent",
+        3: "delivered",
+        4: "read",
+        5: "read",
+      };
+      const promotableStatuses = {
+        failed: ["pending", "sent"],
+        sent: ["pending"],
+        delivered: ["pending", "sent"],
+        read: ["pending", "sent", "delivered"],
+      };
+      for (const item of updates) {
+        const messageId = item?.key?.id;
+        if (!messageId) continue;
+        const numericStatus = Number(item?.update?.status);
+        const status = statusNames[numericStatus];
+        if (!status) continue;
+        const updateResult = await WaChatMessage.updateOne(
+          {
+            sessionId,
+            messageId,
+            direction: "out",
+            status: { $in: promotableStatuses[status] || [] },
+          },
+          { $set: { status } },
+        ).catch(() => null);
+        // Baileys can emit delayed lower-level receipts after a read receipt.
+        // Only publish a state transition that was actually persisted.
+        if (!updateResult?.modifiedCount || !partnerTenant) continue;
+        PartnerWebhookService.enqueueForUser(
+          userId,
+          "whatsapp.message.status",
+          {
+            sessionId,
+            messageId,
+            chatJid: item?.key?.remoteJid || null,
+            status,
+            timestamp: new Date().toISOString(),
+          },
+        ).catch((error) =>
+          console.error("[PARTNER WEBHOOK] status event failed:", error.message),
+        );
+      }
+    });
+
     // Basic message and contact handlers can be added here as needed.
 
     return sock;
@@ -1168,6 +1903,9 @@ class WhatsAppService {
       status: "pending",
       credentials: {},
       chatViewEnabled: !!enableChatView,
+      chatPasscodeHash: enableChatView
+        ? await bcrypt.hash(String(chatPasscode), 10)
+        : null,
     });
     await sessionDb.save();
 
@@ -1188,7 +1926,7 @@ class WhatsAppService {
     const { force = false } = options;
     // Safe check: Don't reconnect if already connected
     const sock = this.sockets.get(sessionId);
-    if (sock?.ws?.readyState === 1 && sock?.user?.id) {
+    if (!force && sock?.ws?.readyState === 1 && sock?.user?.id) {
       console.log("[WA RECONNECT] already connected", { sessionId });
       this.clearReconnectTimer(sessionId);
       return { sessionId, status: "connected" };
@@ -1230,6 +1968,13 @@ class WhatsAppService {
         return;
       }
 
+      // Explicit retry clears a previous terminal error. If credentials are
+      // unavailable below, the state will move to pending and issue a new QR.
+      await this.handleSessionStateChange(sessionId, "connecting", {
+        lastError: null,
+        errorCode: null,
+      });
+
       if (this.sockets.has(sessionId)) {
         // Avoid calling sock.end({ reason: "reconnect" }) as it can cause
         // aggressive disconnect behavior; rely on removeSocket() to cleanup.
@@ -1244,7 +1989,17 @@ class WhatsAppService {
       if (!existsSync(credsPath)) {
         console.warn("[WA RECONNECT] no creds file, forcing QR", { sessionId });
         await this.handleSessionStateChange(sessionId, "pending");
-        return { sessionId, status: "pending" };
+        if (!existsSync(sessionPath)) {
+          mkdirSync(sessionPath, { recursive: true });
+        }
+        const freshAuthState = await useMultiFileAuthState(sessionPath);
+        const freshSocket = await this.createSocket(sessionId, freshAuthState);
+        this.sockets.set(sessionId, freshSocket);
+        return {
+          sessionId,
+          status: "pending",
+          requiresQr: true,
+        };
       }
 
       const authState = await useMultiFileAuthState(sessionPath);
@@ -1265,7 +2020,7 @@ class WhatsAppService {
       this.sockets.set(sessionId, sock);
       await SessionModel.updateOne(
         { sessionId },
-        { status: "connecting" },
+        { status: "connecting", lastError: null, errorCode: null },
       ).catch(() => {});
       return { sessionId, status: "connecting" };
     } finally {
@@ -1339,8 +2094,16 @@ class WhatsAppService {
       : session.phoneNumber;
 
     let status = session.status;
-    if (isLiveConnected) {
+    // A rejected/failed session is terminal until the user explicitly retries.
+    // Stale socket/reconnect flags must never make it appear connected/connecting.
+    if (session.status === "failed" || session.errorCode) {
+      status = "failed";
+    } else if (isLiveConnected && session.status === "connected") {
       status = "connected";
+    } else if (isLiveConnected) {
+      // Socket transport is open, but connection validation (including the
+      // global duplicate-number rule) has not committed yet.
+      status = "connecting";
     } else if (isReconnecting) {
       status = "connecting";
     } else if (status === "connected" || status === "connecting") {
@@ -1456,8 +2219,24 @@ class WhatsAppService {
     return { success: true };
   }
 
-  async deleteSession(sessionId) {
+  async deleteSession(sessionId, userId = null) {
+    const query = {
+      sessionId,
+      ...(userId ? { userId } : {}),
+    };
+    const deletedSession = await SessionModel.findOneAndDelete(query)
+      .select("_id sessionId")
+      .lean();
+
+    // DELETE is intentionally idempotent. A timed-out caller can safely retry
+    // after the database deletion has already completed.
+    if (!deletedSession) {
+      return { success: true, alreadyDeleted: true };
+    }
+
     this.clearReconnectTimer(sessionId);
+    this.pendingReconnects.delete(sessionId);
+    this.duplicateRejectedSessions.delete(sessionId);
     const sock = this.sockets.get(sessionId);
     if (sock) {
       try {
@@ -1467,8 +2246,7 @@ class WhatsAppService {
       this.clearHeartbeat(sessionId);
     }
     await this.removeSessionFiles(sessionId);
-    await SessionModel.deleteOne({ sessionId }).catch(() => {});
-    return { success: true };
+    return { success: true, alreadyDeleted: false };
   }
 }
 

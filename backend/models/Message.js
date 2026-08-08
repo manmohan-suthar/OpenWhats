@@ -55,6 +55,11 @@ const messageSchema = new mongoose.Schema(
       enum: ["ui", "api", "campaign"],
       default: "ui",
     },
+    providerMessageId: {
+      type: String,
+      default: null,
+      index: true,
+    },
   },
   {
     timestamps: true,

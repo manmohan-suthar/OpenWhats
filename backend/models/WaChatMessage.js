@@ -12,12 +12,22 @@ const waChatMessageSchema = new mongoose.Schema(
     mediaType:  { type: String, default: null }, // null | image | video | document | audio
     mediaUrl:   { type: String, default: null }, // relative path /uploads/...
     mediaName:  { type: String, default: null },
+    messageType: {
+      type: String,
+      enum: ["text", "media", "interactive"],
+      default: "text",
+    },
+    interactive: { type: mongoose.Schema.Types.Mixed, default: null },
+    partnerSentWebhookAt: { type: Date, default: null },
+    partnerReceivedWebhookAt: { type: Date, default: null },
     timestamp:  { type: Date, required: true },
   },
   { timestamps: true },
 );
 
 waChatMessageSchema.index({ userId: 1, sessionId: 1, chatJid: 1, timestamp: -1 });
+waChatMessageSchema.index({ userId: 1, mediaUrl: 1 }, { sparse: true });
+waChatMessageSchema.index({ mediaUrl: 1 }, { sparse: true });
 waChatMessageSchema.index({ messageId: 1, sessionId: 1 }, { unique: true });
 
 export default mongoose.model("WaChatMessage", waChatMessageSchema);

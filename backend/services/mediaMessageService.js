@@ -6,6 +6,7 @@ import { Message } from "../models/index.js";
 import WhatsAppService from "./WhatsAppService.js";
 import CampaignService from "./CampaignService.js";
 import SubscriptionService from "./SubscriptionService.js";
+import { downloadSafeRemoteMedia } from "../utils/safeRemoteMedia.js";
 
 const TYPE_TO_MIME = {
   image: "image/jpeg",
@@ -101,21 +102,16 @@ function extensionFromMime(mimeType, fallbackName = "") {
 }
 
 async function downloadRemoteMedia(url, type, preferredName = "") {
-  const response = await fetch(url, { redirect: "follow" });
-
-  if (!response.ok) {
-    throw new Error(`Failed to download media from URL (${response.status})`);
-  }
-
-  const fileName = preferredName || guessFileNameFromUrl(url);
-  const responseMime = (response.headers.get("content-type") || "")
+  const response = await downloadSafeRemoteMedia(url);
+  const fileName = preferredName || guessFileNameFromUrl(response.finalUrl);
+  const responseMime = (response.contentType || "")
     .split(";")
     .shift()
     .trim();
   const mimeType =
     responseMime || mimeFromFileName(fileName, TYPE_TO_MIME[type]);
   const fileExtension = extensionFromMime(mimeType, fileName);
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const buffer = response.buffer;
   const tempFilePath = join(
     tmpdir(),
     `wa-media-${Date.now()}-${crypto.randomUUID()}${fileExtension}`,
@@ -204,13 +200,15 @@ class MediaMessageService {
 
     try {
       await SubscriptionService.assertMessageQuota({ _id: userId }, 1);
+      await msgDoc.save();
+      let whatsappResult;
 
       if (isTextMessage) {
         if (!message.trim()) {
           throw new Error("message is required for text messages");
         }
 
-        await WhatsAppService.sendMessage(
+        whatsappResult = await WhatsAppService.sendMessage(
           session.sessionId,
           jid,
           message.trim(),
@@ -223,7 +221,7 @@ class MediaMessageService {
         resolvedMimeType = file.mimetype;
         mediaName = file.originalname || mediaName;
 
-        await WhatsAppService.sendMessage(
+        whatsappResult = await WhatsAppService.sendMessage(
           session.sessionId,
           jid,
           effectiveMessage,
@@ -242,7 +240,7 @@ class MediaMessageService {
         resolvedMimeType = downloaded.mimeType;
         mediaName = downloaded.fileName || mediaName;
 
-        await WhatsAppService.sendMessage(
+        whatsappResult = await WhatsAppService.sendMessage(
           session.sessionId,
           jid,
           effectiveMessage,
@@ -251,23 +249,26 @@ class MediaMessageService {
         );
       }
 
-      await SubscriptionService.consumeMessageQuota(userId, 1);
-
       msgDoc.status = "sent";
       msgDoc.sentAt = new Date();
-      await msgDoc.save();
-      try {
-        console.debug &&
-          console.debug(
-            `MediaMessage saved: ${msgDoc._id} user:${userId} to:${jid}`,
-          );
-      } catch (e) {
-        // ignore
+      msgDoc.providerMessageId = whatsappResult?.key?.id || null;
+      const bookkeeping = await Promise.allSettled([
+        SubscriptionService.consumeMessageQuota(userId, 1),
+        msgDoc.save(),
+      ]);
+      for (const result of bookkeeping) {
+        if (result.status === "rejected") {
+          console.error("Media post-send bookkeeping failed", {
+            sessionId: session.sessionId,
+            messageId: msgDoc.providerMessageId,
+            error: result.reason?.message || String(result.reason),
+          });
+        }
       }
 
       return {
         success: true,
-        messageId: `msg_${msgDoc._id}`,
+        messageId: msgDoc.providerMessageId || `msg_${msgDoc._id}`,
         to: jid,
         status: "sent",
         type: isTextMessage ? "text" : normalizedType,
@@ -284,7 +285,13 @@ class MediaMessageService {
     } catch (err) {
       msgDoc.status = "failed";
       msgDoc.error = err.message;
-      await msgDoc.save();
+      await msgDoc.save().catch((saveError) => {
+        console.error("Failed to persist media message failure", {
+          sessionId: session.sessionId,
+          messageDocumentId: msgDoc._id,
+          error: saveError?.message || String(saveError),
+        });
+      });
       try {
         console.error &&
           console.error(

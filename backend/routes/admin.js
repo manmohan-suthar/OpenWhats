@@ -14,6 +14,7 @@ import OpenRouterSettings from "../models/OpenRouterSettings.js";
 import MetaSystemSettings from "../meta/models/MetaSystemSettings.js";
 import GoogleOAuthSettings from "../models/GoogleOAuthSettings.js";
 import Flow from "../models/Flow.js";
+import PartnerSettingsService from "../services/PartnerSettingsService.js";
 
 const router = express.Router();
 
@@ -1278,6 +1279,31 @@ router.put("/google-oauth-settings", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ── DeskGo Partner Integration Settings ─────────────────────────────────────
+router.get("/deskgo-partner-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const settings = await PartnerSettingsService.getAdminView();
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.put("/deskgo-partner-settings", authMiddleware, async (req, res) => {
+  if (!ensureAdmin(req, res)) return;
+  try {
+    const settings = await PartnerSettingsService.update(req.body || {}, req.user._id);
+    res.json({
+      success: true,
+      data: settings,
+      message: "DeskGo partner settings saved",
+    });
+  } catch (err) {
+    res.status(err.statusCode || 400).json({ success: false, error: err.message });
   }
 });
 

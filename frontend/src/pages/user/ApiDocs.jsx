@@ -1,795 +1,801 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  BookOpen,
-  Terminal,
-  Key,
-  Copy,
-  Check,
-  Send,
   AlertCircle,
-  CheckCircle2,
-  ArrowRight,
-  Info,
-  Code2,
-  Upload,
-  Globe,
-  Image,
-  Video,
-  FileText,
-  Mic,
-  Layers3,
+  BookOpen,
+  Check,
+  ChevronRight,
+  Copy,
+  Key,
+  Lock,
+  MessageCircle,
+  Network,
+  QrCode,
+  Send,
+  Server,
+  ShieldCheck,
+  Terminal,
+  Users,
 } from "lucide-react";
 import PageHeader from "../../components/ui/PageHeader";
 import { API_ORIGIN } from "../../config/env";
 
-function CopyBtn({ text, className = "" }) {
+const API_KEY_PLACEHOLDER = "wac_live_YOUR_API_KEY";
+const SESSION_ID = "wa_1780579278384_8dy6xrh";
+const CHAT_JID = "919876543210@s.whatsapp.net";
+const GROUP_JID = "120363000000000000@g.us";
+const PHONE_NUMBER = "919876543210";
+
+const SECTIONS = [
+  { id: "quickstart", label: "Quick start", icon: Terminal },
+  { id: "sessions", label: "Sessions", icon: QrCode },
+  { id: "chats", label: "Chats", icon: MessageCircle },
+  { id: "groups", label: "Groups", icon: Users },
+  { id: "messages", label: "Direct messages", icon: Send },
+  { id: "errors", label: "Errors & security", icon: ShieldCheck },
+];
+
+const PERMISSIONS = [
+  ["manage_sessions", "Create, read, update, reconnect, logout, and delete sessions."],
+  ["read_chats", "Read chat lists/history, mark chats read, and request a sync."],
+  ["send_messages", "Send direct, chat, media, and interactive messages."],
+  [
+    "send_interactive_messages",
+    "Send idempotent Quick Actions through an owned WhatsApp session.",
+  ],
+  ["read_groups", "Read groups and group participants."],
+  ["manage_number_lists", "Reserved for the number-list provider API."],
+  ["manage_flows", "Reserved for the workflow provider API."],
+  ["manage_ai_agents", "Reserved for the AI-agent provider API."],
+  ["read_analytics", "Read reports and usage analytics."],
+  ["manage_webhooks", "Manage delivery and event webhooks."],
+];
+
+const SESSION_ENDPOINTS = [
+  {
+    method: "POST",
+    path: "/api/v1/sessions",
+    permission: "manage_sessions",
+    title: "Create session",
+    description:
+      "Creates a real WhatsApp session and starts QR generation. The account subscription session limit is enforced.",
+    body: `{
+  "name": "Customer Support",
+  "enableChatView": true,
+  "chatPasscode": "change-this-passcode"
+}`,
+    response: `{
+  "sessionId": "${SESSION_ID}",
+  "name": "Customer Support",
+  "status": "pending"
+}`,
+  },
+  {
+    method: "GET",
+    path: "/api/v1/sessions",
+    permission: "manage_sessions",
+    title: "List sessions",
+    description:
+      "Returns only sessions owned by the authenticated OpenWhats user, including live connection status.",
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}`,
+    permission: "manage_sessions",
+    title: "Get session",
+    description: "Returns one owned session without credentials or passcode hash.",
+  },
+  {
+    method: "PATCH",
+    path: `/api/v1/sessions/${SESSION_ID}`,
+    permission: "manage_sessions",
+    title: "Update session",
+    description:
+      "Updates the display name, chat access, or chat passcode. Sending chatPasscode automatically enables chat view.",
+    body: `{
+  "name": "Primary Support",
+  "chatViewEnabled": true,
+  "chatPasscode": "new-secure-passcode"
+}`,
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/qr`,
+    permission: "manage_sessions",
+    title: "Get QR code",
+    description:
+      "Returns the current QR payload. Poll every 2–3 seconds only while the session is pending; stop after connected.",
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/reconnect`,
+    permission: "manage_sessions",
+    title: "Reconnect session",
+    description: "Restarts an existing authenticated WhatsApp session.",
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/logout`,
+    permission: "manage_sessions",
+    title: "Logout session",
+    description:
+      "Logs out WhatsApp and removes local credentials. A new QR scan will be required.",
+  },
+  {
+    method: "DELETE",
+    path: `/api/v1/sessions/${SESSION_ID}`,
+    permission: "manage_sessions",
+    title: "Delete session",
+    description:
+      "Permanently deletes the session and its local WhatsApp credentials.",
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/message-history?limit=50&offset=0`,
+    permission: "read_chats",
+    title: "Get outbound message history",
+    description:
+      "Returns stored outbound delivery records for the session with total, limit, and offset metadata.",
+  },
+];
+
+const CHAT_ENDPOINTS = [
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/chats`,
+    permission: "read_chats",
+    title: "List chats",
+    description:
+      "Returns up to 200 synced chats, newest first, plus the session connection status.",
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/chats/${CHAT_JID}/messages?limit=50`,
+    permission: "read_chats",
+    title: "Get chat messages",
+    description:
+      "Returns oldest-to-newest messages. Use before=<ISO timestamp> for cursor pagination. limit accepts 1–100.",
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/chats/${CHAT_JID}/messages`,
+    permission: "send_messages",
+    title: "Reply in chat",
+    description:
+      "Send JSON text or multipart media to a contact/group chat. URL-encode the JID when building URLs.",
+    body: `{
+  "message": "Hello from your support team"
+}`,
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/chats/${CHAT_JID}/interactive`,
+    permission: "send_interactive_messages",
+    title: "Send Pilot Quick Actions",
+    description:
+      "Requires an Idempotency-Key header. Supports quick_reply, list, cta_url, cta_call, and allowlisted native_flow messages. Reuse the same key when retrying the same uncertain request.",
+    body: `{
+  "type": "quick_reply",
+  "data": {
+    "title": "Customer Support",
+    "body": "Create a support ticket?",
+    "footer": "DeskGo Pilot",
+    "fallbackText": "Reply 1 for Yes or 2 for No.",
+    "buttons": [
+      { "id": "opaque-action-token-yes", "text": "Yes" },
+      { "id": "opaque-action-token-no", "text": "No" }
+    ]
+  }
+}`,
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/chats/${CHAT_JID}/read`,
+    permission: "read_chats",
+    title: "Mark chat read",
+    description: "Clears the stored unread count for this owned session chat.",
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/chats/sync`,
+    permission: "read_chats",
+    title: "Force chat sync",
+    description:
+      "Reconnects the session so WhatsApp history synchronization can run again.",
+  },
+];
+
+const GROUP_ENDPOINTS = [
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/groups`,
+    permission: "read_groups",
+    title: "List WhatsApp groups",
+    description:
+      "Loads groups from the connected WhatsApp session and returns participant summary data.",
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/groups/${GROUP_JID}/participants`,
+    permission: "read_groups",
+    title: "Get group participants",
+    description:
+      "Returns participant names, resolved phone numbers, roles, and unresolved-participant counts.",
+  },
+  {
+    method: "GET",
+    path: `/api/v1/sessions/${SESSION_ID}/groups/${GROUP_JID}/export?format=csv`,
+    permission: "read_groups",
+    title: "Export group participants",
+    description:
+      "Downloads resolved group contacts. format supports csv, doc, or pdf.",
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/groups/create`,
+    permission: "read_groups",
+    title: "Create WhatsApp group",
+    description:
+      "Creates a new WhatsApp group with specified subject name (1–25 characters) and participant phone numbers.",
+    body: `{
+  "subject": "VIP Support Group",
+  "participants": [
+    "919876543210",
+    "919876543211"
+  ]
+}`,
+    response: `{
+  "success": true,
+  "data": {
+    "groupJid": "120363000000000000@g.us",
+    "subject": "VIP Support Group",
+    "participants": [
+      { "id": "919876543210@s.whatsapp.net", "admin": null },
+      { "id": "919876543211@s.whatsapp.net", "admin": null }
+    ],
+    "size": 3
+  }
+}`,
+  },
+  {
+    method: "POST",
+    path: `/api/v1/sessions/${SESSION_ID}/groups/${GROUP_JID}/import-number-list`,
+    permission: "read_groups + manage_number_lists",
+    title: "Import group into a number list",
+    description:
+      "Creates a reusable number list from resolved group participants and enforces the account number-list limit.",
+    body: `{
+  "name": "Customer Group"
+}`,
+  },
+];
+
+const MESSAGE_ENDPOINTS = [
+  {
+    method: "POST",
+    path: "/api/messages/send",
+    permission: "send_messages",
+    title: "Send text",
+    description: "Send a plain text message to a number including country code.",
+    body: `{
+  "session": "${SESSION_ID}",
+  "to": "${PHONE_NUMBER}",
+  "message": "Your payment has been received.",
+  "contactName": "Customer"
+}`,
+  },
+  {
+    method: "POST",
+    path: "/api/messages/send",
+    permission: "send_messages",
+    title: "Send CTA and quick-reply buttons",
+    description:
+      "buttons must be an array (maximum 10). Each button can use its own type, so call, URL, copy-code and quick reply can be mixed.",
+    body: `{
+  "session": "${SESSION_ID}",
+  "to": "${PHONE_NUMBER}",
+  "header": "Order update",
+  "message": "Choose an action for order #1024.",
+  "footer": "Customer Support",
+  "buttons": [
+    { "type": "call", "text": "Call support", "number": "+919784740736" },
+    { "type": "url", "text": "Track order", "url": "https://example.com/orders/1024" },
+    { "type": "copy", "text": "Copy coupon", "code": "SAVE20" },
+    { "type": "quick_reply", "text": "Resolved", "id": "order_resolved" }
+  ]
+}`,
+  },
+  {
+    method: "POST",
+    path: "/api/messages/send",
+    permission: "send_messages",
+    title: "Send WhatsApp chat button",
+    description:
+      "The whatsapp type converts the supplied number into a secure https://wa.me link button.",
+    body: `{
+  "session": "${SESSION_ID}",
+  "to": "${PHONE_NUMBER}",
+  "message": "Chat with our sales team.",
+  "buttons": [
+    { "type": "whatsapp", "text": "Open WhatsApp", "number": "+919784740736" }
+  ]
+}`,
+  },
+  {
+    method: "POST",
+    path: "/api/messages/send",
+    permission: "send_messages",
+    title: "Send media by URL",
+    description:
+      "media_type supports image, video, audio and document. Audio cannot be combined with interactive buttons.",
+    body: `{
+  "session": "${SESSION_ID}",
+  "to": "${PHONE_NUMBER}",
+  "media_type": "document",
+  "message": "Your invoice is attached.",
+  "media": {
+    "url": "https://your-cdn.example/invoice.pdf",
+    "caption": "Invoice #1024",
+    "filename": "invoice-1024.pdf",
+    "mimeType": "application/pdf"
+  }
+}`,
+  },
+];
+
+function hydrate(value, values = {}) {
+  if (!value) return value;
+  return String(value)
+    .replaceAll(SESSION_ID, values.sessionId || SESSION_ID)
+    .replaceAll(CHAT_JID, values.chatJid || CHAT_JID)
+    .replaceAll(GROUP_JID, values.groupJid || GROUP_JID)
+    .replaceAll(
+      `"to": "${PHONE_NUMBER}"`,
+      `"to": "${values.phoneNumber || PHONE_NUMBER}"`,
+    );
+}
+
+function DynamicInputs({ fields, values, onChange }) {
+  return (
+    <div className="card mb-5 p-4">
+      <p className="mb-3 text-xs font-semibold text-slate-800 dark:text-slate-200">
+        Try with your resource values
+      </p>
+      <div className="grid gap-3 md:grid-cols-2">
+        {fields.map(({ key, label, placeholder }) => (
+          <div key={key}>
+            <label className="mb-1.5 block text-[11px] font-semibold text-slate-500">
+              {label}
+            </label>
+            <input
+              className="input font-mono text-xs"
+              value={values[key]}
+              placeholder={placeholder}
+              onChange={(event) => onChange(key, event.target.value)}
+            />
+          </div>
+        ))}
+      </div>
+      <p className="mt-3 text-[10px] text-slate-400">
+        Endpoint paths, JSON bodies and cURL examples below update automatically.
+      </p>
+    </div>
+  );
+}
+
+function CopyButton({ value }) {
   const [copied, setCopied] = useState(false);
 
-  const copy = () => {
-    navigator.clipboard.writeText(text).catch(() => {});
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
   };
 
   return (
     <button
+      type="button"
       onClick={copy}
-      className={`flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg transition-colors ${className || "text-slate-400 hover:text-white hover:bg-white/10"}`}
+      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/10 dark:hover:text-white"
     >
-      {copied ? (
-        <>
-          <Check size={11} className="text-emerald-400" /> Copied
-        </>
-      ) : (
-        <>
-          <Copy size={11} /> Copy
-        </>
-      )}
+      {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
+      {copied ? "Copied" : "Copy"}
     </button>
   );
 }
 
-function CodeBlock({ title, code }) {
+function CodeBlock({ title, value }) {
   return (
-    <div className="rounded-xl overflow-hidden border border-slate-700 text-xs">
-      <div className="flex items-center justify-between bg-slate-800 px-4 py-2.5">
-        <div className="flex items-center gap-2.5">
-          <div className="flex gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-amber-500/70" />
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500/70" />
-          </div>
-          {title && <span className="text-slate-400 font-mono">{title}</span>}
-        </div>
-        <CopyBtn text={code} />
+    <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-950">
+      <div className="flex items-center justify-between border-b border-slate-200 bg-slate-100 px-3 py-2 dark:border-slate-800 dark:bg-slate-900">
+        <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{title}</span>
+        <CopyButton value={value} />
       </div>
-      <pre className="bg-slate-950 px-4 py-4 overflow-x-auto leading-relaxed text-slate-300 font-mono whitespace-pre-wrap">
-        {code}
+      <pre className="overflow-x-auto whitespace-pre-wrap px-4 py-4 font-mono text-xs leading-6 text-slate-700 dark:text-slate-300">
+        {value}
       </pre>
     </div>
   );
 }
 
-function ParamRow({ name, type, required, children }) {
+function MethodBadge({ method }) {
+  const colors = {
+    GET: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+    POST: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+    PATCH: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+    DELETE: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+  };
   return (
-    <div className="flex items-start gap-3 py-3 border-b border-slate-100 dark:border-slate-800 last:border-0">
-      <div className="flex items-center gap-2 w-44 flex-shrink-0 pt-0.5">
-        <code className="text-xs font-mono font-semibold text-primary-600 dark:text-primary-400">
-          {name}
-        </code>
-        {required && (
-          <span className="text-[9px] font-bold text-red-500 bg-red-50 dark:bg-red-900/20 px-1.5 py-0.5 rounded">
-            req
-          </span>
+    <span className={`rounded-md px-2 py-1 font-mono text-[10px] font-bold ${colors[method]}`}>
+      {method}
+    </span>
+  );
+}
+
+function EndpointCard({ endpoint, apiKey, values = {} }) {
+  const path = hydrate(endpoint.path, values);
+  const body = hydrate(endpoint.body, values);
+  const request = `curl -X ${endpoint.method} "${API_ORIGIN}${path}" \\
+  -H "x-api-key: ${apiKey}"${body ? ` \\\n  -H "Content-Type: application/json" \\\n  -d '${body.replace(/\n/g, "\n  ")}'` : ""}`;
+
+  return (
+    <article className="card overflow-hidden border border-slate-200 dark:border-slate-800">
+      <div className="border-b border-slate-100 p-5 dark:border-slate-800">
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <MethodBadge method={endpoint.method} />
+          <code className="break-all font-mono text-xs font-semibold text-slate-800 dark:text-slate-200">
+            {path}
+          </code>
+        </div>
+        <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{endpoint.title}</h3>
+        <p className="mt-1 text-xs leading-5 text-slate-500">{endpoint.description}</p>
+        <span className="mt-3 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 font-mono text-[10px] text-slate-500 dark:bg-slate-800">
+          <Lock size={9} /> {endpoint.permission}
+        </span>
+      </div>
+      <div className="space-y-3 p-5">
+        {body && <CodeBlock title="JSON body" value={body} />}
+        <CodeBlock title="cURL" value={request} />
+        {endpoint.response && (
+          <CodeBlock title="Example response" value={hydrate(endpoint.response, values)} />
         )}
       </div>
-      <div className="flex-1">
-        <span className="text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded mr-2">
-          {type}
-        </span>
-        <span className="text-xs text-slate-600 dark:text-slate-400">
-          {children}
-        </span>
-      </div>
-    </div>
+    </article>
   );
 }
 
-function ResponseField({ name, type, children }) {
+function EndpointList({ endpoints, apiKey, values }) {
   return (
-    <div className="flex items-start gap-3 py-2.5 border-b border-slate-100 dark:border-slate-800 last:border-0">
-      <code className="text-xs font-mono text-emerald-600 dark:text-emerald-400 w-32 flex-shrink-0 pt-0.5">
-        {name}
-      </code>
-      <span className="text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded h-fit flex-shrink-0">
-        {type}
-      </span>
-      <span className="text-xs text-slate-600 dark:text-slate-400">
-        {children}
-      </span>
+    <div className="space-y-4">
+      {endpoints.map((endpoint) => (
+        <EndpointCard
+          key={`${endpoint.method}-${endpoint.path}-${endpoint.title}`}
+          endpoint={endpoint}
+          apiKey={apiKey}
+          values={values}
+        />
+      ))}
     </div>
   );
 }
 
-const BASE = API_ORIGIN;
-const ENDPOINT = "/api/messages/send";
-const MEDIA_ENDPOINT = "/api/messages/media/send";
-const HELP_ENDPOINT = "/api/help";
-const FULL_URL = `${BASE}${ENDPOINT}`;
-const MEDIA_FULL_URL = `${BASE}${MEDIA_ENDPOINT}`;
-const PLACEHOLDER = "wac_live_YOUR_API_KEY";
-
-const buildSnippets = (apiKey) => ({
-  curl: `curl -X POST ${FULL_URL} \
-  -H "x-api-key: ${apiKey}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session": "wa_1780579278384_8dy6xrh",
-    "to": "918307418627",
-    "media_type": "image",
-    "cta_type": "call",
-    "header": "Suthar Tech",
-    "footer": "Support team",
-    "message": "Need help with your order?",
-    "media": {
-      "url": "https://easyflow.suthartech.com/logo.png",
-      "caption": "Hello image"
-    },
-    "buttons": [
-      { "text": "Call support", "number": "+919784740736" },
-      { "text": "Sales team", "number": "+919619218048" }
-    ],
-    "contactName": "Suthar Tech"
-  }'`,
-  js: `const response = await fetch("${FULL_URL}", {
-  method: "POST",
-  headers: {
-    "x-api-key": "${apiKey}",
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    session: "wa_1780579278384_8dy6xrh",
-    to: "918307418627",
-    media_type: "image",
-    cta_type: "call",
-    header: "Suthar Tech",
-    footer: "Support team",
-    message: "Need help with your order?",
-    media: {
-      url: "https://easyflow.suthartech.com/logo.png",
-      caption: "Hello image",
-    },
-    buttons: [
-      { text: "Call support", number: "+919784740736" },
-      { text: "Sales team", number: "+919619218048" },
-    ],
-    contactName: "Suthar Tech",
-  }),
-});
-
-const data = await response.json();
-console.log(data);`,
-  python: `import requests
-
-response = requests.post(
-    "${FULL_URL}",
-    headers={
-        "x-api-key": "${apiKey}",
-        "Content-Type": "application/json",
-    },
-    json={
-        "session": "wa_1780579278384_8dy6xrh",
-        "to": "918307418627",
-        "media_type": "image",
-        "cta_type": "call",
-        "header": "Suthar Tech",
-        "footer": "Support team",
-        "message": "Need help with your order?",
-        "media": {
-            "url": "https://easyflow.suthartech.com/logo.png",
-            "caption": "Hello image",
-        },
-        "buttons": [
-            {"text": "Call support", "number": "+919784740736"},
-            {"text": "Sales team", "number": "+919619218048"},
-        ],
-        "contactName": "Suthar Tech",
-    },
-)
-
-print(response.json())`,
-  php: `<?php
-$response = file_get_contents("${FULL_URL}", false,
-  stream_context_create([
-    "http" => [
-      "method"  => "POST",
-      "header"  => implode("\r\n", [
-        "x-api-key: ${apiKey}",
-        "Content-Type: application/json",
-      ]),
-      "content" => json_encode([
-        "session"     => "wa_1780579278384_8dy6xrh",
-        "to"          => "918307418627",
-        "media_type"  => "image",
-        "cta_type"    => "call",
-        "header"      => "Suthar Tech",
-        "footer"      => "Support team",
-        "message"     => "Need help with your order?",
-        "media"       => [
-          "url" => "https://easyflow.suthartech.com/logo.png",
-          "caption" => "Hello image",
-        ],
-        "buttons"     => [
-          ["text" => "Call support", "number" => "+919784740736"],
-          ["text" => "Sales team", "number" => "+919619218048"],
-        ],
-        "contactName" => "Suthar Tech",
-      ]),
-    ],
-  ])
-);
-echo $response;`,
-});
-
-const buildMediaSnippets = (apiKey) => ({
-  url: `curl -X POST ${MEDIA_FULL_URL} \
-  -H "x-api-key: ${apiKey}" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session": "wa_1776437321495_*****",
-    "to": "9183074*****",
-    "type": "image",
-    "media": {
-      "url": "https://yourcdn.com/image.jpg",
-      "caption": "Hello image 👋"
-    },
-    "contactName": "Suthar Tech"
-  }'`,
-  upload: `curl -X POST ${MEDIA_FULL_URL} \
-  -H "x-api-key: ${apiKey}" \
-  -F "session=wa_1776437321495_*****" \
-  -F "to=9183074*****" \
-  -F "type=image" \
-  -F "file=@/path/to/image.jpg" \
-  -F "caption=Hello from upload"`,
-  js: `const response = await fetch("${MEDIA_FULL_URL}", {
-  method: "POST",
-  headers: {
-    "x-api-key": "${apiKey}",
-    "Content-Type": "application/json",
-  },
-  body: JSON.stringify({
-    session: "wa_1776437321495_*****",
-    to: "9183074*****",
-    type: "video",
-    media: {
-      url: "https://yourcdn.com/video.mp4",
-      caption: "Watch this video",
-    },
-    contactName: "Suthar Tech",
-  }),
-});
-
-const data = await response.json();
-console.log(data);`,
-  python: `import requests
-
-response = requests.post(
-    "${MEDIA_FULL_URL}",
-    headers={
-        "x-api-key": "${apiKey}",
-        "Content-Type": "application/json",
-    },
-    json={
-        "session": "wa_1776437321495_*****",
-        "to": "9183074*****",
-        "type": "document",
-        "media": {
-            "url": "https://yourcdn.com/file.pdf",
-            "filename": "invoice.pdf",
-        },
-        "contactName": "Suthar Tech",
-    },
-)
-
-print(response.json())`,
-  php: `<?php
-$response = file_get_contents("${MEDIA_FULL_URL}", false,
-  stream_context_create([
-    "http" => [
-      "method"  => "POST",
-      "header"  => implode("\r\n", [
-        "x-api-key: ${apiKey}",
-        "Content-Type: application/json",
-      ]),
-      "content" => json_encode([
-        "session"     => "wa_1776437321495_*****",
-        "to"          => "9183074*****",
-        "type"        => "audio",
-        "media"       => [
-          "url" => "https://yourcdn.com/audio.mp3",
-        ],
-        "contactName" => "Suthar Tech",
-      ]),
-    ],
-  ])
-);
-echo $response;`,
-});
-
-const SUCCESS_RESPONSE = `{
-  "success": true,
-  "messageId": "msg_3FA85F64-5717-4562-B3FC-2C963F66AFA6",
-  "to": "918307418627",
-  "status": "sent",
-  "type": "image",
-  "cta_type": "call",
-  "buttons": 2,
-  "media": {
-    "source": "url",
-    "type": "image",
-    "url": "https://easyflow.suthartech.com/logo.png"
-  },
-  "timestamp": "2026-06-06T10:30:00.000Z"
-}`;
-
-const ERROR_RESPONSE = `{
-  "success": false,
-  "error": "WhatsApp session not connected",
-  "code": "SESSION_OFFLINE"
-}`;
-
-const LANG_LABELS = {
-  curl: "cURL",
-  js: "JavaScript",
-  python: "Python",
-  php: "PHP",
-};
-
-const MEDIA_TYPES = [
-  {
-    icon: Image,
-    title: "Image",
-    type: '"image"',
-    payload:
-      '"media": { "url": "https://example.com/photo.jpg", "caption": "Nice photo" }',
-  },
-  {
-    icon: Video,
-    title: "Video",
-    type: '"video"',
-    payload:
-      '"media": { "url": "https://example.com/video.mp4", "caption": "Watch this video" }',
-  },
-  {
-    icon: FileText,
-    title: "Document",
-    type: '"document"',
-    payload:
-      '"media": { "url": "https://example.com/file.pdf", "filename": "invoice.pdf" }',
-  },
-  {
-    icon: Mic,
-    title: "Audio",
-    type: '"audio"',
-    payload: '"media": { "url": "https://example.com/audio.mp3" }',
-  },
-];
+function SectionTitle({ eyebrow, title, children }) {
+  return (
+    <div className="mb-5">
+      <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-primary-600">{eyebrow}</p>
+      <h2 className="mt-1 text-xl font-semibold text-slate-900 dark:text-white">{title}</h2>
+      {children && <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">{children}</p>}
+    </div>
+  );
+}
 
 export default function ApiDocs() {
-  const [lang, setLang] = useState("curl");
-  const [mediaMode, setMediaMode] = useState("url");
-  const [apiKey, setApiKey] = useState(PLACEHOLDER);
+  const [activeSection, setActiveSection] = useState("quickstart");
+  const [apiKeyInput, setApiKeyInput] = useState("");
+  const [values, setValues] = useState({
+    sessionId: SESSION_ID,
+    chatJid: CHAT_JID,
+    groupJid: GROUP_JID,
+    phoneNumber: PHONE_NUMBER,
+  });
+  const apiKey = apiKeyInput || API_KEY_PLACEHOLDER;
+  const updateValue = (key, value) =>
+    setValues((current) => ({ ...current, [key]: value }));
 
-  const SNIPPETS = buildSnippets(apiKey);
-  const MEDIA_SNIPPETS = buildMediaSnippets(apiKey);
-  const isReal = apiKey !== PLACEHOLDER && apiKey.trim().length > 10;
+  const quickStart = useMemo(
+    () => `curl "${API_ORIGIN}/api/v1/sessions" \\
+  -H "x-api-key: ${apiKey}"`,
+    [apiKey],
+  );
 
   return (
-    <div className="page space-y-6 max-w-4xl">
+    <div className="page max-w-7xl space-y-6">
       <PageHeader
-        title="API Documentation"
-        subtitle="Send text and media messages with a universal payload built for production SaaS"
+        title="Provider API Documentation"
+        subtitle="Sessions, chats, groups, messaging, permissions, errors, and production examples"
       />
 
-      <div className="grid md:grid-cols-[1.2fr_0.8fr] gap-4">
-        <div className="card p-5 bg-gradient-to-br from-[#0f172a] via-[#111827] to-[#0b1220] text-white border border-white/10 overflow-hidden relative">
-          <div
-            className="absolute inset-0 opacity-30 pointer-events-none"
-            style={{
-              backgroundImage:
-                "radial-gradient(circle at top right, rgba(34,197,94,.35), transparent 28%), radial-gradient(circle at bottom left, rgba(59,130,246,.22), transparent 24%)",
-            }}
-          />
-          <div className="relative flex items-start gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-white/10 flex items-center justify-center shrink-0">
-              <BookOpen size={20} className="text-emerald-300" />
+      <section className="relative overflow-hidden rounded-2xl border border-emerald-200 bg-white p-6 text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-white">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,.14),transparent_35%),radial-gradient(circle_at_bottom_left,rgba(59,130,246,.1),transparent_30%)] dark:bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,.2),transparent_35%),radial-gradient(circle_at_bottom_left,rgba(59,130,246,.16),transparent_30%)]" />
+        <div className="relative grid gap-6 lg:grid-cols-[1fr_auto] lg:items-end">
+          <div>
+            <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-emerald-400/10">
+              <Network size={20} className="text-emerald-300" />
             </div>
-            <div className="flex-1">
-              <p className="text-xs uppercase tracking-[0.28em] text-white/50 font-semibold mb-2">
-                Recommended SaaS format
-              </p>
-              <h2 className="text-2xl font-semibold leading-tight mb-2">
-                One payload for text, media, and CTA buttons.
-              </h2>
-              <p className="text-sm text-white/70 leading-relaxed max-w-2xl">
-                Use the send endpoint for greenfield integrations. The media
-                upload endpoint remains available for local file uploads.
-              </p>
+            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-emerald-300">
+              API version 1
+            </p>
+            <h2 className="mt-2 max-w-2xl text-2xl font-semibold">
+              Control the same WhatsApp session and inbox features used by OpenWhats.
+            </h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600 dark:text-slate-400">
+              The v1 provider routes call the real OpenWhats services. Session ownership,
+              subscription limits, and API-key scopes are checked on every request.
+            </p>
+          </div>
+          <div className="grid grid-cols-2 gap-3 text-xs">
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3 dark:border-white/10 dark:bg-white/5">
+              <p className="text-slate-500">Base URL</p>
+              <p className="mt-1 break-all font-mono text-slate-700 dark:text-slate-200">{API_ORIGIN}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white/60 p-3 dark:border-white/10 dark:bg-white/5">
+              <p className="text-slate-500">Provider prefix</p>
+              <p className="mt-1 font-mono text-slate-700 dark:text-slate-200">/api/v1</p>
             </div>
           </div>
-          <div className="relative mt-5 flex flex-wrap gap-2">
-            {[
-              "API key auth",
-              "URL media",
-              "CTA buttons",
-              "Multipart upload",
-              "Help API",
-            ].map((tag) => (
-              <span
-                key={tag}
-                className="px-3 py-1.5 rounded-full text-[11px] font-semibold bg-white/10 text-white/80 border border-white/10"
+        </div>
+      </section>
+
+      <div className="grid gap-6 lg:grid-cols-[230px_minmax(0,1fr)]">
+        <aside className="h-fit space-y-3 lg:sticky lg:top-[80px]">
+          <nav className="card p-2">
+            {SECTIONS.map(({ id, label, icon: Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setActiveSection(id)}
+                className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-xs font-semibold transition-colors ${
+                  activeSection === id
+                    ? "bg-primary-50 text-primary-700 dark:bg-primary-900/20 dark:text-primary-300"
+                    : "text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800"
+                }`}
               >
-                {tag}
-              </span>
+                <Icon size={15} />
+                <span className="flex-1">{label}</span>
+                <ChevronRight size={13} />
+              </button>
             ))}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          {[
-            { label: "Base URL", value: BASE, icon: Globe },
-            { label: "Send endpoint", value: ENDPOINT, icon: Send },
-            { label: "Help endpoint", value: HELP_ENDPOINT, icon: BookOpen },
-            { label: "Auth header", value: "x-api-key", icon: Key },
-          ].map(({ label, value, icon: Icon }) => (
-            <div
-              key={label}
-              className="card p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700"
-            >
-              <div className="flex items-center gap-2 mb-2 text-slate-500 dark:text-slate-400">
-                <Icon size={14} />
-                <span className="text-[11px] font-semibold uppercase tracking-wide">
-                  {label}
-                </span>
-              </div>
-              <p className="text-xs font-mono text-slate-800 dark:text-slate-200 break-all">
-                {value}
-              </p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="card p-4 flex items-start gap-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
-        <div className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/40 flex items-center justify-center flex-shrink-0 mt-0.5">
-          <Key size={15} className="text-blue-600 dark:text-blue-400" />
-        </div>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-blue-800 dark:text-blue-200 mb-0.5">
-            Authentication
-          </p>
-          <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
-            Every request must include your API key in the{" "}
-            <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">
-              x-api-key
-            </code>{" "}
-            header. Generate one from the{" "}
-            <a
-              href="/dashboard/api-keys"
-              className="underline font-semibold hover:text-blue-900 dark:hover:text-blue-100"
-            >
-              API Keys
-            </a>{" "}
-            page. Base URL:{" "}
-            <code className="font-mono bg-blue-100 dark:bg-blue-900/40 px-1 rounded">
-              {BASE}
-            </code>
-          </p>
-        </div>
-      </div>
-
-      <div className="card p-4 flex items-start gap-3 border border-slate-200 dark:border-slate-700">
-        <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center flex-shrink-0 mt-0.5">
-          <Terminal size={14} className="text-slate-500" />
-        </div>
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-1">
-            Paste your API key to auto-fill examples
-          </p>
-          <div className="flex items-center gap-2">
+          </nav>
+          <div className="card p-4">
+            <label className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+              Fill examples with your key
+            </label>
             <input
-              type="text"
-              value={apiKey === PLACEHOLDER ? "" : apiKey}
-              onChange={(e) => setApiKey(e.target.value.trim() || PLACEHOLDER)}
-              placeholder="wac_live_… or wac_test_…"
-              className="flex-1 font-mono text-xs bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-primary-500"
+              type="password"
+              autoComplete="off"
+              value={apiKeyInput}
+              onChange={(event) => setApiKeyInput(event.target.value.trim())}
+              placeholder="wac_live_…"
+              className="input mt-2 font-mono text-xs"
             />
-            {isReal && (
-              <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/20 px-2.5 py-1.5 rounded-lg whitespace-nowrap">
-                <Check size={11} /> Ready to copy
-              </span>
-            )}
-          </div>
-          {!isReal && (
-            <p className="text-[11px] text-slate-400 mt-1.5">
-              Get your key from{" "}
-              <a
-                href="/dashboard/api-keys"
-                className="underline text-primary-500 hover:text-primary-600"
-              >
-                API Keys
-              </a>{" "}
-              page — copy it when first created (shown only once).
+            <p className="mt-2 text-[10px] leading-4 text-slate-400">
+              The value stays only in this page state. Never place a live key in browser
+              source code or Git.
             </p>
+          </div>
+        </aside>
+
+        <main className="min-w-0">
+          {activeSection === "quickstart" && (
+            <div className="space-y-6">
+              <section>
+                <SectionTitle eyebrow="Start here" title="Authentication and first request">
+                  Generate an API key from API Keys, store the raw value when it is shown,
+                  and send it through x-api-key or Authorization: Bearer.
+                </SectionTitle>
+                <div className="grid gap-4 md:grid-cols-3">
+                  {[
+                    [Key, "1. Generate a key", "Choose only the scopes your integration needs."],
+                    [Server, "2. Create a session", "Create the session and request its QR payload."],
+                    [QrCode, "3. Scan and connect", "Poll status until connected, then send messages."],
+                  ].map(([Icon, title, text]) => (
+                    <div key={title} className="card p-5">
+                      <Icon size={18} className="text-primary-600" />
+                      <p className="mt-3 text-sm font-semibold text-slate-900 dark:text-white">{title}</p>
+                      <p className="mt-1 text-xs leading-5 text-slate-500">{text}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <CodeBlock title="Test authentication by listing sessions" value={quickStart} />
+
+              <section className="card p-5">
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Authentication headers</h3>
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <CodeBlock title="Recommended" value={`x-api-key: ${apiKey}`} />
+                  <CodeBlock title="Also supported" value={`Authorization: Bearer ${apiKey}`} />
+                </div>
+              </section>
+
+              <section>
+                <SectionTitle eyebrow="Least privilege" title="API-key permissions">
+                  New keys default to all currently available scopes. Reduce scopes for
+                  production integrations and rotate a key if it is exposed.
+                </SectionTitle>
+                <div className="card divide-y divide-slate-100 overflow-hidden dark:divide-slate-800">
+                  {PERMISSIONS.map(([permission, description]) => (
+                    <div key={permission} className="grid gap-1 px-5 py-3 md:grid-cols-[190px_1fr]">
+                      <code className="text-xs font-semibold text-primary-600">{permission}</code>
+                      <p className="text-xs leading-5 text-slate-500">{description}</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>
           )}
-        </div>
-      </div>
 
-      <div className="card overflow-hidden">
-        <div className="px-6 py-5 border-b border-slate-100 dark:border-slate-800 flex items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-primary-50 dark:bg-primary-900/20 flex items-center justify-center flex-shrink-0">
-            <Send size={17} className="text-primary-600" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-[11px] font-bold tracking-wide font-mono bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
-                POST
-              </span>
-              <code className="text-sm font-mono font-semibold text-slate-800 dark:text-slate-200">
-                {ENDPOINT}
-              </code>
-            </div>
-            <p className="text-xs text-slate-500 mt-1">
-              Unified send endpoint for text, media URLs, CTA buttons, and
-              mixed button payloads.
-            </p>
-          </div>
-        </div>
+          {activeSection === "sessions" && (
+            <section>
+              <SectionTitle eyebrow="Session lifecycle" title="Create and control WhatsApp sessions">
+                A session belongs to the OpenWhats user behind the API key. IDs from another
+                account always return not found.
+              </SectionTitle>
+              <DynamicInputs
+                fields={[
+                  {
+                    key: "sessionId",
+                    label: "Session ID",
+                    placeholder: SESSION_ID,
+                  },
+                ]}
+                values={values}
+                onChange={updateValue}
+              />
+              <EndpointList endpoints={SESSION_ENDPOINTS} apiKey={apiKey} values={values} />
+            </section>
+          )}
 
-        <div className="p-6 space-y-8">
-          <section>
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <Code2 size={12} className="text-primary-500" /> Request Body
-            </p>
-            <div className="card bg-slate-50 dark:bg-slate-800/50 px-4 py-1">
-              <ParamRow name="session" type="string" required>
-                The sessionId of a connected WhatsApp session.
-              </ParamRow>
-              <ParamRow name="to" type="string" required>
-                Recipient phone number in international format without the +
-                sign.
-              </ParamRow>
-              <ParamRow name="message" type="string">
-                Main body text. If empty, media.caption is used for media and
-                button messages.
-              </ParamRow>
-              <ParamRow name="media_type" type="string">
-                text, image, video, audio, or document. mediaType and meda_type
-                are also accepted.
-              </ParamRow>
-              <ParamRow name="cta_type" type="string">
-                call, url, copy, quick_reply, or whatsapp. Buttons can override
-                this with their own type.
-              </ParamRow>
-              <ParamRow name="header" type="string">
-                Optional interactive header text.
-              </ParamRow>
-              <ParamRow name="footer" type="string">
-                Optional footer text. The legacy typo fotter is also accepted.
-              </ParamRow>
-              <ParamRow name="media" type="object">
-                Optional URL media object: url, caption, filename, mimeType.
-              </ParamRow>
-              <ParamRow name="buttons" type="array">
-                Optional button array. Up to 10 buttons are accepted.
-              </ParamRow>
-              <ParamRow name="contactName" type="string">
-                Optional display name for the recipient.
-              </ParamRow>
-            </div>
-          </section>
+          {activeSection === "chats" && (
+            <section>
+              <SectionTitle eyebrow="Inbox API" title="Read chats and send replies">
+                Chat JIDs include @s.whatsapp.net, @lid, or @g.us. URL-encode dynamic JIDs
+                with encodeURIComponent before adding them to request paths.
+              </SectionTitle>
+              <DynamicInputs
+                fields={[
+                  { key: "sessionId", label: "Session ID", placeholder: SESSION_ID },
+                  {
+                    key: "chatJid",
+                    label: "Chat JID",
+                    placeholder: CHAT_JID,
+                  },
+                ]}
+                values={values}
+                onChange={updateValue}
+              />
+              <EndpointList endpoints={CHAT_ENDPOINTS} apiKey={apiKey} values={values} />
+            </section>
+          )}
 
-          <section>
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <Terminal size={12} className="text-primary-500" /> Example
-              Request
-            </p>
+          {activeSection === "groups" && (
+            <section>
+              <SectionTitle eyebrow="Group access" title="List groups and participants">
+                The underlying WhatsApp session must be connected. Group information comes
+                from the real linked account, not a cached demo response.
+              </SectionTitle>
+              <DynamicInputs
+                fields={[
+                  { key: "sessionId", label: "Session ID", placeholder: SESSION_ID },
+                  {
+                    key: "groupJid",
+                    label: "Group JID",
+                    placeholder: GROUP_JID,
+                  },
+                ]}
+                values={values}
+                onChange={updateValue}
+              />
+              <EndpointList endpoints={GROUP_ENDPOINTS} apiKey={apiKey} values={values} />
+            </section>
+          )}
 
-            <div className="flex gap-1 bg-slate-100 dark:bg-slate-800 rounded-xl p-1 w-fit mb-3">
-              {Object.entries(LANG_LABELS).map(([id, label]) => (
-                <button
-                  key={id}
-                  onClick={() => setLang(id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    lang === id
-                      ? "bg-white dark:bg-slate-900 text-slate-800 dark:text-white shadow-sm"
-                      : "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-
-            <CodeBlock code={SNIPPETS[lang]} />
-          </section>
-
-          <section>
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <Upload size={12} className="text-primary-500" /> Media Send API
-            </p>
-
-            <div className="flex flex-wrap gap-2 mb-3">
-              {[
-                { id: "url", label: "URL-based media" },
-                { id: "upload", label: "Multipart upload" },
-              ].map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setMediaMode(item.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                    mediaMode === item.id
-                      ? "bg-primary-600 text-white shadow-sm"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid  gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle2 size={13} className="text-emerald-500" />
-                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    {mediaMode === "url"
-                      ? "Best for production"
-                      : "Best for local files"}
-                  </span>
+          {activeSection === "messages" && (
+            <div className="space-y-6">
+              <SectionTitle eyebrow="Messaging" title="Send to a phone number directly">
+                Use the unified endpoint for a new outbound conversation. Use the chat reply
+                endpoint when you already have a chat JID.
+              </SectionTitle>
+              <DynamicInputs
+                fields={[
+                  { key: "sessionId", label: "Session ID", placeholder: SESSION_ID },
+                  {
+                    key: "phoneNumber",
+                    label: "Recipient number with country code",
+                    placeholder: PHONE_NUMBER,
+                  },
+                ]}
+                values={values}
+                onChange={updateValue}
+              />
+              <div className="card overflow-hidden">
+                <div className="border-b border-slate-100 px-5 py-4 dark:border-slate-800">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
+                    Button body fields
+                  </h3>
                 </div>
-                <CodeBlock
-                  code={
-                    mediaMode === "url"
-                      ? MEDIA_SNIPPETS.url
-                      : MEDIA_SNIPPETS.upload
-                  }
-                />
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {[
+                    ["call", "text + number", "Phone number must include country code."],
+                    ["url", "text + url", "URL must start with http:// or https://."],
+                    ["whatsapp", "text + number", "Creates a wa.me chat URL."],
+                    ["copy", "text + code", "Copies the supplied coupon/reference code."],
+                    ["quick_reply", "text + id (optional)", "A stable id is recommended for reply handling."],
+                  ].map(([type, fields, note]) => (
+                    <div
+                      key={type}
+                      className="grid gap-1 px-5 py-3 md:grid-cols-[120px_150px_1fr]"
+                    >
+                      <code className="text-xs font-bold text-primary-600">{type}</code>
+                      <code className="text-xs text-slate-600 dark:text-slate-300">{fields}</code>
+                      <p className="text-xs text-slate-500">{note}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
+              <EndpointList endpoints={MESSAGE_ENDPOINTS} apiKey={apiKey} values={values} />
             </div>
+          )}
 
-            <div className="mt-4 grid sm:grid-cols-2 gap-3">
-              {MEDIA_TYPES.map(({ icon: Icon, title, type, payload }) => (
-                <div
-                  key={title}
-                  className="card p-4 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700"
-                >
-                  <div className="flex items-center gap-2 mb-2">
-                    <Icon size={14} className="text-primary-500" />
-                    <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
-                      {title}
-                    </p>
+          {activeSection === "errors" && (
+            <div className="space-y-6">
+              <SectionTitle eyebrow="Production behavior" title="Status codes, safety, and retries">
+                Read the HTTP status and code before retrying. Do not retry validation,
+                authentication, permission, or subscription-limit failures automatically.
+              </SectionTitle>
+              <div className="card divide-y divide-slate-100 overflow-hidden dark:divide-slate-800">
+                {[
+                  ["400", "Bad request", "Missing/invalid input, offline session, or QR not ready."],
+                  ["401", "Authentication failed", "Missing, invalid, expired, or revoked API key."],
+                  ["403", "Permission denied", "The key does not include the required scope."],
+                  ["404", "Not found", "Resource is missing or belongs to another OpenWhats user."],
+                  ["409", "Conflict", "The requested operation conflicts with current resource state."],
+                  ["403", "Subscription limit", "LIMIT_EXCEEDED means the account plan must be upgraded or usage reduced."],
+                  ["500", "Server failure", "Retry with exponential backoff only for transient failures."],
+                ].map(([status, title, text]) => (
+                  <div key={`${status}-${title}`} className="grid gap-2 px-5 py-4 md:grid-cols-[60px_160px_1fr]">
+                    <code className="text-xs font-bold text-red-500">{status}</code>
+                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{title}</p>
+                    <p className="text-xs leading-5 text-slate-500">{text}</p>
                   </div>
-                  <p className="text-[11px] text-slate-500 font-mono mb-2">
-                    type: {type}
-                  </p>
-                  <pre className="text-[11px] font-mono text-slate-600 dark:text-slate-300 whitespace-pre-wrap leading-relaxed">
-                    {payload}
-                  </pre>
-                </div>
-              ))}
-            </div>
-          </section>
-
-          <section>
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <ArrowRight size={12} className="text-primary-500" /> Response
-              Fields
-            </p>
-            <div className="card bg-slate-50 dark:bg-slate-800/50 px-4 py-1 mb-4">
-              <ResponseField name="success" type="boolean">
-                <code className="font-mono text-[11px]">true</code> on success,{" "}
-                <code className="font-mono text-[11px]">false</code> on failure.
-              </ResponseField>
-              <ResponseField name="messageId" type="string">
-                Unique identifier for the sent message.
-              </ResponseField>
-              <ResponseField name="to" type="string">
-                The recipient phone number.
-              </ResponseField>
-              <ResponseField name="status" type="string">
-                Delivery status —{" "}
-                <code className="font-mono text-[11px]">sent</code>,{" "}
-                <code className="font-mono text-[11px]">delivered</code>, or{" "}
-                <code className="font-mono text-[11px]">failed</code>.
-              </ResponseField>
-              <ResponseField name="timestamp" type="string">
-                ISO 8601 timestamp of when the message was sent.
-              </ResponseField>
-              <ResponseField name="error" type="string">
-                Human-readable error description (only present on failure).
-              </ResponseField>
-            </div>
-
-            <div className="grid sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <CheckCircle2 size={13} className="text-emerald-500" />
-                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    200 — Success
-                  </span>
-                </div>
-                <CodeBlock code={SUCCESS_RESPONSE} />
+                ))}
               </div>
-              <div>
-                <div className="flex items-center gap-2 mb-2">
-                  <AlertCircle size={13} className="text-red-500" />
-                  <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    4xx — Error
-                  </span>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="card p-5">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Key security</h3>
+                  <ul className="mt-3 space-y-2 text-xs leading-5 text-slate-500">
+                    <li>• Keep keys only on a backend server or secret manager.</li>
+                    <li>• Never commit keys or expose them in frontend JavaScript.</li>
+                    <li>• Use separate test/live keys and minimum permissions.</li>
+                    <li>• Revoke and replace a leaked key immediately.</li>
+                  </ul>
                 </div>
-                <CodeBlock code={ERROR_RESPONSE} />
+                <div className="card p-5">
+                  <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Retry rules</h3>
+                  <ul className="mt-3 space-y-2 text-xs leading-5 text-slate-500">
+                    <li>• Retry network/5xx failures with exponential backoff.</li>
+                    <li>• Do not blindly retry message sends without idempotency.</li>
+                    <li>• Poll QR only while pending; stop on connected/failed.</li>
+                    <li>• URL-encode session, chat, and group path parameters.</li>
+                  </ul>
+                </div>
               </div>
             </div>
-          </section>
-
-          <section>
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-300 uppercase tracking-widest mb-3 flex items-center gap-2">
-              <Info size={12} className="text-primary-500" /> Common Errors
-            </p>
-            <div className="space-y-2">
-              {[
-                {
-                  code: 401,
-                  label: "Unauthorized",
-                  desc: "Missing or invalid API key.",
-                },
-                {
-                  code: 400,
-                  label: "Bad Request",
-                  desc: "A required field is missing.",
-                },
-                {
-                  code: 404,
-                  label: "Session Not Found",
-                  desc: "The session does not exist or belongs to another account.",
-                },
-                {
-                  code: 503,
-                  label: "Session Offline",
-                  desc: "The WhatsApp session is disconnected. Reconnect it first.",
-                },
-              ].map(({ code, label, desc }) => (
-                <div
-                  key={code}
-                  className="flex items-start gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800 rounded-xl"
-                >
-                  <span className="text-xs font-bold font-mono text-red-500 w-8 flex-shrink-0 pt-0.5">
-                    {code}
-                  </span>
-                  <div>
-                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                      {label}
-                    </p>
-                    <p className="text-[11px] text-slate-500 mt-0.5">{desc}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
-      </div>
-
-      <div className="card p-4 flex items-start gap-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800">
-        <AlertCircle
-          size={15}
-          className="text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5"
-        />
-        <p className="text-xs text-amber-800 dark:text-amber-300 leading-relaxed">
-          <strong>Phone number format:</strong> always include the country code
-          and remove the leading <code className="font-mono">+</code>.
-        </p>
+          )}
+        </main>
       </div>
     </div>
   );

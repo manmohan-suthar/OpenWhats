@@ -55,6 +55,12 @@ export const login = async (req, res) => {
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
+    if (user.managedByPartner || user.authProvider === "partner") {
+      return res.status(403).json({
+        error: "This account is managed by DeskGo and cannot sign in directly.",
+        code: "PARTNER_MANAGED_ACCOUNT",
+      });
+    }
 
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {

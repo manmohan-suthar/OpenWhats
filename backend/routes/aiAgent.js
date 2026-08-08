@@ -5,9 +5,11 @@ import AiKnowledgeSummary from "../models/AiKnowledgeSummary.js";
 import AiAgent from "../models/AiAgent.js";
 import AiReplyLog from "../models/AiReplyLog.js";
 import { WhatsAppSession } from "../models/index.js";
+import blockPartnerProduct from "../middleware/blockPartnerProduct.js";
 
 const router = express.Router();
 router.use(authMiddleware);
+router.use(blockPartnerProduct("AI Agent"));
 
 // ── Summarize knowledge ─────────────────────────────────────────────────────
 router.post("/knowledge/summarize", async (req, res) => {

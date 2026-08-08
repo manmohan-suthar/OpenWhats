@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { API_PERMISSIONS } from "../constants/apiPermissions.js";
 
 const apiKeySchema = new mongoose.Schema(
   {
@@ -30,7 +31,7 @@ const apiKeySchema = new mongoose.Schema(
     },
     permissions: {
       type: [String],
-      default: ["send_messages", "manage_sessions", "read_analytics"],
+      default: () => [...API_PERMISSIONS],
     },
     status: {
       type: String,

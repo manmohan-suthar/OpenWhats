@@ -19,7 +19,6 @@ import { sendPayment } from "../services/interactive/payment.js";
 import { sendProduct } from "../services/interactive/product.js";
 import { sendMultiProduct } from "../services/interactive/multiProduct.js";
 import { sendCTACopy } from "../services/interactive/ctaCopy.js";
-import CampaignService from "../services/CampaignService.js";
 import { WhatsAppSession, Message } from "../models/index.js";
 
 /**
@@ -96,13 +95,30 @@ export async function sendInteractiveMessage(req, res) {
       });
     }
 
-    // Get WhatsApp session socket
-    const sock = getSessionSocket(sessionId);
-
-    if (!sock) {
+    const sessionDoc = await WhatsAppSession.findOne({
+      sessionId,
+      userId: req.user?._id,
+    });
+    if (!sessionDoc) {
       return res.status(404).json({
         success: false,
         error: "WhatsApp session not found",
+      });
+    }
+    if (sessionDoc.status !== "connected") {
+      return res.status(409).json({
+        success: false,
+        error: "WhatsApp session is not connected",
+      });
+    }
+
+    // Resolve the socket only after proving that the authenticated principal
+    // owns this session. Session IDs alone are never authorization.
+    const sock = getSessionSocket(sessionId);
+    if (!sock) {
+      return res.status(503).json({
+        success: false,
+        error: "WhatsApp session socket is unavailable",
       });
     }
 
@@ -119,24 +135,6 @@ export async function sendInteractiveMessage(req, res) {
     // Attempt to locate the WhatsApp session document so we can log the
     // outgoing message in the Message collection. Prefer the authenticated
     // user's session lookup when available.
-    let sessionDoc = null;
-    try {
-      if (req.user && req.user._id) {
-        sessionDoc = await CampaignService.findUserSession(
-          req.user._id,
-          sessionId,
-        ).catch(() => null);
-      }
-
-      if (!sessionDoc) {
-        sessionDoc = await WhatsAppSession.findOne({ sessionId }).catch(
-          () => null,
-        );
-      }
-    } catch (e) {
-      sessionDoc = null;
-    }
-
     // Determine source (api vs ui)
     const source = req.authMode === "api-key" ? "api" : "ui";
 

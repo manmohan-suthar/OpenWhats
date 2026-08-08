@@ -1,7 +1,9 @@
 const FALLBACK_API_URL = "http://localhost:3000";
 
 export const API_ORIGIN = (
-  import.meta.env.VITE_API_URL || FALLBACK_API_URL
+  import.meta.env.VITE_API_URL ||
+  import.meta.env.VITE_BASE_URL ||
+  FALLBACK_API_URL
 ).replace(/\/$/, "");
 
 export function resolveApiUrl(path = "") {

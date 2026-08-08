@@ -395,30 +395,39 @@ class CampaignService {
     try {
       await SubscriptionService.assertMessageQuota({ _id: userId }, 1);
 
+      // Persist the local intent before crossing the provider boundary. Once
+      // WhatsApp accepts the send, later bookkeeping must not tell callers the
+      // send failed and encourage a duplicate retry.
+      await msgDoc.save();
+
       // Send message with optional media
-      await WhatsAppService.sendMessage(
+      const whatsappResult = await WhatsAppService.sendMessage(
         session.sessionId,
         jid,
         message,
         mediaPath,
         mediaType,
       );
-
-      await SubscriptionService.consumeMessageQuota(userId, 1);
-
       msgDoc.status = "sent";
       msgDoc.sentAt = new Date();
-      await msgDoc.save();
-      try {
-        console.debug &&
-          console.debug(`Message saved: ${msgDoc._id} user:${userId}`);
-      } catch (e) {
-        // ignore
+      msgDoc.providerMessageId = whatsappResult?.key?.id || null;
+      const bookkeeping = await Promise.allSettled([
+        SubscriptionService.consumeMessageQuota(userId, 1),
+        msgDoc.save(),
+      ]);
+      for (const result of bookkeeping) {
+        if (result.status === "rejected") {
+          console.error("Post-send bookkeeping failed after provider acceptance", {
+            sessionId: session.sessionId,
+            messageId: msgDoc.providerMessageId,
+            error: result.reason?.message || String(result.reason),
+          });
+        }
       }
 
       return {
         success: true,
-        messageId: `msg_${msgDoc._id}`,
+        messageId: msgDoc.providerMessageId || `msg_${msgDoc._id}`,
         to: jid,
         status: "sent",
         timestamp: msgDoc.sentAt.toISOString(),
@@ -426,7 +435,13 @@ class CampaignService {
     } catch (err) {
       msgDoc.status = "failed";
       msgDoc.error = err.message;
-      await msgDoc.save();
+      await msgDoc.save().catch((saveError) => {
+        console.error("Failed to persist outbound message failure", {
+          sessionId: session.sessionId,
+          messageDocumentId: msgDoc._id,
+          error: saveError?.message || String(saveError),
+        });
+      });
       try {
         console.error &&
           console.error(

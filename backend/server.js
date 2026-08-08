@@ -40,6 +40,10 @@ import Campaign from "./models/Campaign.js";
 import { startCampaignById } from "./controllers/campaignController.js";
 import nativeMessageRoutes from "./routes/nativeMessageRoutes.js";
 import interactiveRoutes from "./routes/interactiveRoutes.js";
+import providerV1Routes from "./routes/providerV1.js";
+import partnerRoutes from "./routes/partner.js";
+import PartnerWebhookService from "./services/PartnerWebhookService.js";
+import { blockPartnerChatMedia } from "./controllers/providerMediaController.js";
 
 const app = express();
 const httpServer = createServer(app);
@@ -56,16 +60,39 @@ CampaignService.setSocketIO(io);
 setReelSocketIO(io);
 
 app.use(cors());
-app.use(express.json());
+app.use(
+  express.json({
+    limit: "10mb",
+    verify: (req, _res, buffer) => {
+      req.rawBody = Buffer.from(buffer);
+    },
+  }),
+);
 
 app.get("/", (req, res) => {
   res.send("WhatsApp API is running v3.1.2 by ME");
 });
 
 // Serve uploaded files
-app.use("/uploads", express.static("uploads"));
+app.use("/uploads/private", (_req, res) => {
+  res.status(404).json({ error: "Not found" });
+});
+app.use("/uploads", blockPartnerChatMedia);
+app.use("/uploads", express.static("uploads", {
+  dotfiles: "deny",
+  index: false,
+  fallthrough: false,
+  immutable: true,
+  maxAge: "1d",
+  setHeaders: (res) => {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+  },
+}));
 
 app.use("/api/auth", authRoutes);
+app.use("/api/v1", providerV1Routes);
+app.use("/api/partner", partnerRoutes);
 app.use("/api/sessions", sessionRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/messages/media", mediaMessageRoutes);
@@ -92,6 +119,16 @@ app.use("/api/help", helpRoutes);
 app.use("/api/docs", helpRoutes);
 app.use("/api/messages", interactiveRoutes);
 app.use(nativeMessageRoutes);
+
+app.use((error, _req, res, next) => {
+  if (error?.name !== "MulterError" && !String(error?.message || "").startsWith("File type not allowed")) return next(error);
+  const tooLarge = error?.code === "LIMIT_FILE_SIZE";
+  return res.status(tooLarge ? 413 : 415).json({
+    success: false,
+    code: tooLarge ? "UPLOAD_TOO_LARGE" : "UPLOAD_TYPE_UNSUPPORTED",
+    error: tooLarge ? "Upload exceeds the 100 MB limit" : error.message,
+  });
+});
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
@@ -159,6 +196,7 @@ const start = async () => {
 
     // ✅ 4. START REEL UPLOAD SCHEDULER
     startUploadScheduler(io);
+    PartnerWebhookService.start();
 
     // ✅ 5. SCHEDULER (SAFE)
     // const runScheduler = async () => {

@@ -34,12 +34,31 @@ const whatsAppSessionSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    lastError: {
+      type: String,
+      default: null,
+    },
+    errorCode: {
+      type: String,
+      default: null,
+    },
     chatViewEnabled: {
       type: Boolean,
       default: false,
     },
     chatPasscodeHash: {
       type: String,
+      default: null,
+      select: false,
+    },
+    chatPasscodeFailedAttempts: {
+      type: Number,
+      default: 0,
+      min: 0,
+      select: false,
+    },
+    chatPasscodeLockedUntil: {
+      type: Date,
       default: null,
       select: false,
     },

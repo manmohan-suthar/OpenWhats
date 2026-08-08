@@ -7,6 +7,7 @@ import WhatsAppSession from "../models/WhatsAppSession.js";
 import Campaign from "../models/Campaign.js";
 import NumberList from "../models/NumberList.js";
 import MediaCollection from "../models/Media.js";
+import PartnerTenantService from "./PartnerTenantService.js";
 
 const DEFAULT_FEATURES = [
   { key: "sessions", label: "WhatsApp Sessions", enabled: true },
@@ -143,6 +144,14 @@ function formatBytes(bytes) {
 }
 
 class SubscriptionService {
+  isPartnerManagedUser(user) {
+    return Boolean(
+      user &&
+        typeof user === "object" &&
+        (user.managedByPartner || user.authProvider === "partner"),
+    );
+  }
+
   async bootstrapDefaults() {
     for (const plan of DEFAULT_PLANS) {
       await SubscriptionPlan.updateOne(
@@ -388,6 +397,10 @@ class SubscriptionService {
   }
 
   async assertResourceLimit(user, resourceKey, increment = 1) {
+    if (this.isPartnerManagedUser(user)) {
+      return { managedBy: "deskgo", resourceKey, increment };
+    }
+
     const summary = await this.getUsageSummary(user._id);
     const { plan, subscription, usage } = summary;
 
@@ -447,6 +460,9 @@ class SubscriptionService {
   }
 
   async assertStorageLimit(user, incomingBytes = 0) {
+    if (this.isPartnerManagedUser(user)) {
+      return { managedBy: "deskgo", incomingBytes };
+    }
     const summary = await this.getUsageSummary(user._id);
     await this.assertFeatureEnabled(user, "media");
 
@@ -475,6 +491,10 @@ class SubscriptionService {
   }
 
   async assertMessageQuota(user, count = 1) {
+    if (this.isPartnerManagedUser(user)) {
+      return { managedBy: "deskgo", count };
+    }
+
     const sub = await this.getUserSubscription(user._id);
     const plan = sub.planId;
 
@@ -543,6 +563,11 @@ class SubscriptionService {
   }
 
   async consumeMessageQuota(userId, count = 1) {
+    const partnerTenant = await PartnerTenantService.findForUser(userId);
+    if (partnerTenant) {
+      return { managedBy: "deskgo", count };
+    }
+
     const sub = await this.getUserSubscription(userId);
     const keys = getMessageWindowKeys();
 

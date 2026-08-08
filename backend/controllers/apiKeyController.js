@@ -1,5 +1,10 @@
 import crypto from "crypto";
 import ApiKey from "../models/ApiKey.js";
+import {
+  API_PERMISSIONS,
+  PARTNER_MANAGED_API_PERMISSIONS,
+  isValidApiPermission,
+} from "../constants/apiPermissions.js";
 
 const sha256 = (str) => crypto.createHash("sha256").update(str).digest("hex");
 
@@ -28,14 +33,34 @@ export const createApiKey = async (req, res) => {
     const keyHash = sha256(rawKey);
     const keyPrefix = rawKey.slice(0, 16); // "wac_live_a1b2c3d4"
 
-    const defaultPerms = ["send_messages", "manage_sessions", "read_analytics", "manage_webhooks"];
+    if (!["live", "test"].includes(environment)) {
+      return res.status(400).json({
+        success: false,
+        error: "environment must be live or test",
+      });
+    }
+
+    if (
+      permissions !== undefined &&
+      (!Array.isArray(permissions) ||
+        permissions.length === 0 ||
+        permissions.some((permission) => !isValidApiPermission(permission)))
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "permissions contains an unsupported permission",
+        allowedPermissions: API_PERMISSIONS,
+      });
+    }
+
+    const requestedPermissions = permissions || API_PERMISSIONS;
     const apiKey = await ApiKey.create({
       userId,
       name: name.trim(),
       keyHash,
       keyPrefix,
       environment,
-      permissions: Array.isArray(permissions) ? permissions : defaultPerms,
+      permissions: [...new Set(requestedPermissions)],
     });
 
     // Return the raw key ONCE — it will never be retrievable again
@@ -81,6 +106,73 @@ export const listApiKeys = async (req, res) => {
   }
 };
 
+export const updateApiKey = async (req, res) => {
+  try {
+    const { name, permissions } = req.body || {};
+    const updates = {};
+
+    if (name !== undefined) {
+      const normalizedName = String(name).trim();
+      if (!normalizedName || normalizedName.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: "Key name must be between 1 and 100 characters",
+        });
+      }
+      updates.name = normalizedName;
+    }
+
+    if (permissions !== undefined) {
+      if (
+        !Array.isArray(permissions) ||
+        permissions.length === 0 ||
+        permissions.some((permission) => !isValidApiPermission(permission))
+      ) {
+        return res.status(400).json({
+          success: false,
+          error: "permissions contains an unsupported permission",
+          allowedPermissions: API_PERMISSIONS,
+        });
+      }
+      updates.permissions = [...new Set(permissions)];
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Provide name or permissions to update",
+      });
+    }
+
+    const key = await ApiKey.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { $set: updates },
+      { new: true, runValidators: true },
+    ).lean();
+
+    if (!key) {
+      return res.status(404).json({ success: false, error: "API key not found" });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        id: key._id,
+        name: key.name,
+        keyPrefix: key.keyPrefix,
+        environment: key.environment,
+        permissions: key.permissions,
+        status: key.status,
+        lastUsed: key.lastUsed,
+        callCount: key.callCount,
+        createdAt: key.createdAt,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+};
+
 // DELETE /api/api-keys/:id  (revoke)
 export const revokeApiKey = async (req, res) => {
   try {
@@ -107,39 +199,40 @@ export const deleteApiKey = async (req, res) => {
   }
 };
 
-// Internal helper used by auth middleware
-export const findUserByApiKey = async (rawKey) => {
+export const findApiKeyPrincipal = async (rawKey) => {
   try {
     const keyHash = sha256(rawKey);
+    const apiKey = await ApiKey.findOne({
+      keyHash,
+      status: "active",
+    }).populate("userId");
 
-    console.log("🗝️  [API-KEY] rawKey prefix :", rawKey.slice(0, 20) + "…");
-    console.log("🗝️  [API-KEY] sha256 hash   :", keyHash.slice(0, 24) + "…");
+    if (!apiKey?.userId) return null;
 
-    // Check total docs in collection first
-    const total = await ApiKey.countDocuments();
-    console.log("🗝️  [API-KEY] Total ApiKey docs in DB :", total);
+    // Partner-managed credentials are controlled by the partner contract, not
+    // by the hidden OpenWhats account. Reconcile new provider capabilities on
+    // first use so existing DeskGo tenants do not require credential rotation.
+    if (
+      apiKey.userId.managedByPartner &&
+      apiKey.userId.partner === "deskgo" &&
+      String(apiKey.name || "").startsWith("DeskGo · ") &&
+      (apiKey.permissions.length !== PARTNER_MANAGED_API_PERMISSIONS.length ||
+        PARTNER_MANAGED_API_PERMISSIONS.some(
+          (permission) => !apiKey.permissions.includes(permission),
+        ))
+    ) {
+      apiKey.permissions = [...PARTNER_MANAGED_API_PERMISSIONS];
+      await apiKey.save();
+    }
 
-    // Look for ANY active key for debugging
-    const allActive = await ApiKey.find({ status: "active" }).select("keyHash keyPrefix").lean();
-    console.log("🗝️  [API-KEY] Active keys in DB :", allActive.length);
-    allActive.forEach((k, i) => {
-      console.log(`🗝️  [API-KEY]   [${i}] prefix=${k.keyPrefix}  hash=${k.keyHash.slice(0, 24)}…`);
-    });
+    ApiKey.updateOne(
+      { _id: apiKey._id },
+      { lastUsed: new Date(), $inc: { callCount: 1 } },
+    ).catch(() => {});
 
-    const apiKey = await ApiKey.findOne({ keyHash, status: "active" }).populate("userId");
-    console.log("🗝️  [API-KEY] findOne result :", apiKey ? `found — id=${apiKey._id}` : "NOT FOUND");
-
-    if (!apiKey) return null;
-
-    // Check populated user
-    console.log("🗝️  [API-KEY] populated userId :", apiKey.userId ? `ok — ${apiKey.userId.email}` : "POPULATE FAILED (null)");
-
-    // Update usage stats (fire-and-forget)
-    ApiKey.updateOne({ _id: apiKey._id }, { lastUsed: new Date(), $inc: { callCount: 1 } }).catch(() => {});
-
-    return apiKey.userId;
+    return { user: apiKey.userId, apiKey };
   } catch (err) {
-    console.error("🗝️  [API-KEY] 💥 Exception in findUserByApiKey:", err.message, err.stack);
+    console.error("API key authentication failed:", err.message);
     return null;
   }
 };

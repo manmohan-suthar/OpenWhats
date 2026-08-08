@@ -4,6 +4,7 @@ import {
 } from "@whiskeysockets/baileys";
 
 import { getSessionSocket } from "../services/WhatsAppService.js";
+import { WhatsAppSession } from "../models/index.js";
 
 export async function sendNativeMessage(req, res) {
   try {
@@ -13,6 +14,23 @@ export async function sendNativeMessage(req, res) {
       return res.status(400).json({
         success: false,
         error: "sessionId and to required",
+      });
+    }
+
+    const ownedSession = await WhatsAppSession.findOne({
+      sessionId,
+      userId: req.user?._id,
+    }).lean();
+    if (!ownedSession) {
+      return res.status(404).json({
+        success: false,
+        error: "WhatsApp session not found",
+      });
+    }
+    if (ownedSession.status !== "connected") {
+      return res.status(409).json({
+        success: false,
+        error: "WhatsApp session is not connected",
       });
     }
 

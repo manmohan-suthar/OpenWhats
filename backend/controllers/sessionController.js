@@ -4,6 +4,9 @@ import WhatsAppService from "../services/WhatsAppService.js";
 import mongoose from "mongoose";
 import SubscriptionService from "../services/SubscriptionService.js";
 import { sendSubscriptionError } from "../utils/subscription.js";
+import bcrypt from "bcryptjs";
+import crypto from "crypto";
+import { executeProviderIdempotentRequest } from "../services/ProviderRequestIdempotencyService.js";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 const GROUP_LIST_COLORS = [
@@ -23,6 +26,32 @@ function randomGroupListColor() {
   return GROUP_LIST_COLORS[
     Math.floor(Math.random() * GROUP_LIST_COLORS.length)
   ];
+}
+
+function secretFingerprint(value) {
+  if (value === undefined) return undefined;
+  const key =
+    process.env.PROVIDER_IDEMPOTENCY_SECRET || process.env.JWT_SECRET || "";
+  if (!key && process.env.NODE_ENV === "production") {
+    const error = new Error("Provider idempotency secret is not configured");
+    error.statusCode = 503;
+    error.code = "PROVIDER_IDEMPOTENCY_NOT_CONFIGURED";
+    throw error;
+  }
+  return crypto
+    .createHmac("sha256", key || "openwhats-development-only")
+    .update(String(value))
+    .digest("hex");
+}
+
+function sendControllerError(res, error, fallback) {
+  const statusCode = Number(error?.statusCode || error?.status || 500);
+  return res.status(statusCode).json({
+    success: false,
+    code: error?.code || undefined,
+    error: error?.message || fallback,
+    ...(error?.details ? { details: error.details } : {}),
+  });
 }
 
 function sanitizeFileName(value) {
@@ -409,25 +438,43 @@ export const createSession = async (req, res) => {
   try {
     const { name, enableChatView = false, chatPasscode = "" } = req.body;
 
-    if (!name) {
+    const normalizedName = String(name || "").trim();
+    if (!normalizedName || normalizedName.length > 100) {
       return res.status(400).json({ error: "Session name is required" });
     }
 
-    if (enableChatView && String(chatPasscode).length < 4) {
+    if (enableChatView && !/^\d{4}$/.test(String(chatPasscode))) {
       return res
         .status(400)
-        .json({ error: "Chat passcode must be at least 4 characters" });
+        .json({ error: "Chat passcode must be exactly 4 digits" });
     }
 
-    await SubscriptionService.assertResourceLimit(req.user, "sessions", 1);
-
     console.log("Creating session for user:", req.user?._id, "name:", name);
-    const result = await WhatsAppService.createSession(req.user._id, name, {
-      enableChatView: !!enableChatView,
-      chatPasscode: String(chatPasscode || ""),
+    const handled = await executeProviderIdempotentRequest({
+      userId: req.user._id,
+      sessionId: "session-create",
+      chatJid: normalizedName,
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "session_create",
+      payload: {
+        name: normalizedName,
+        enableChatView: !!enableChatView,
+        chatPasscode: secretFingerprint(chatPasscode || ""),
+      },
+      execute: async () => {
+        await SubscriptionService.assertResourceLimit(req.user, "sessions", 1);
+        return WhatsAppService.createSession(req.user._id, normalizedName, {
+          enableChatView: !!enableChatView,
+          chatPasscode: String(chatPasscode || ""),
+        });
+      },
     });
 
-    res.status(201).json(result);
+    res
+      .status(handled.duplicate ? 200 : 201)
+      .json({ ...handled.response, duplicate: handled.duplicate });
   } catch (err) {
     console.error("Create session error:", err);
     return sendSubscriptionError(res, err, "Failed to create session");
@@ -466,6 +513,8 @@ export const listSessions = async (req, res) => {
         phone: liveSession?.phoneNumber || session.phoneNumber,
         phoneNumber: liveSession?.phoneNumber || session.phoneNumber,
         chatViewEnabled: !!session.chatViewEnabled,
+        lastError: session.lastError || null,
+        errorCode: session.errorCode || null,
         lastConnected: liveSession?.lastConnected || session.lastConnected,
         createdAt: session.createdAt,
       };
@@ -498,6 +547,8 @@ export const getSession = async (req, res) => {
       status: liveSession?.status || session.status,
       phoneNumber: liveSession?.phoneNumber || session.phoneNumber,
       chatViewEnabled: !!session.chatViewEnabled,
+      lastError: session.lastError || null,
+      errorCode: session.errorCode || null,
       lastConnected: liveSession?.lastConnected || session.lastConnected,
       createdAt: session.createdAt,
     });
@@ -506,24 +557,118 @@ export const getSession = async (req, res) => {
   }
 };
 
+export const updateSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, chatViewEnabled, chatPasscode } = req.body || {};
+    const input = {};
+
+    if (name !== undefined) {
+      const normalizedName = String(name).trim();
+      if (!normalizedName || normalizedName.length > 100) {
+        return res.status(400).json({
+          success: false,
+          error: "Session name must be between 1 and 100 characters",
+        });
+      }
+      input.name = normalizedName;
+    }
+
+    if (chatViewEnabled !== undefined) {
+      if (typeof chatViewEnabled !== "boolean") {
+        return res.status(400).json({
+          success: false,
+          error: "chatViewEnabled must be a boolean",
+        });
+      }
+      input.chatViewEnabled = chatViewEnabled;
+    }
+
+    if (chatPasscode !== undefined) {
+      if (!/^\d{4}$/.test(String(chatPasscode))) {
+        return res.status(400).json({
+          success: false,
+          error: "Chat passcode must be exactly 4 digits",
+        });
+      }
+      input.chatPasscode = String(chatPasscode);
+    }
+
+    if (Object.keys(input).length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Provide name, chatViewEnabled, or chatPasscode to update",
+      });
+    }
+
+    const handled = await executeProviderIdempotentRequest({
+      userId: req.user._id,
+      sessionId: id,
+      chatJid: "session-settings",
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body?.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "session_update",
+      payload: {
+        ...input,
+        ...(input.chatPasscode
+          ? { chatPasscode: secretFingerprint(input.chatPasscode) }
+          : {}),
+      },
+      execute: async () => {
+        const updates = { ...input };
+        delete updates.chatPasscode;
+        if (input.chatViewEnabled === false) {
+          updates.chatPasscodeHash = null;
+          updates.chatPasscodeFailedAttempts = 0;
+          updates.chatPasscodeLockedUntil = null;
+        }
+        if (input.chatPasscode) {
+          updates.chatPasscodeHash = await bcrypt.hash(input.chatPasscode, 10);
+          updates.chatViewEnabled = true;
+          updates.chatPasscodeFailedAttempts = 0;
+          updates.chatPasscodeLockedUntil = null;
+        }
+        const session = await WhatsAppSession.findOneAndUpdate(
+          { sessionId: id, userId: req.user._id },
+          { $set: updates },
+          { new: true, runValidators: true },
+        ).select("-credentials");
+        if (!session) {
+          const error = new Error("Session not found");
+          error.statusCode = 404;
+          error.code = "SESSION_NOT_FOUND";
+          throw error;
+        }
+        return {
+          success: true,
+          data: WhatsAppService.getLiveSessionSnapshot(session),
+        };
+      },
+    });
+    return res.json({ ...handled.response, duplicate: handled.duplicate });
+  } catch (err) {
+    return sendControllerError(res, err, "Failed to update session");
+  }
+};
+
 export const deleteSession = async (req, res) => {
   try {
     const { id } = req.params;
-
-    const session = await WhatsAppSession.findOne({
-      sessionId: id,
+    const handled = await executeProviderIdempotentRequest({
       userId: req.user._id,
+      sessionId: id,
+      chatJid: "session-delete",
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body?.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "session_delete",
+      payload: { sessionId: id },
+      execute: () => WhatsAppService.deleteSession(id, req.user._id),
     });
-
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
-    }
-
-    await WhatsAppService.deleteSession(id);
-
-    res.json({ success: true });
+    res.json({ ...handled.response, duplicate: handled.duplicate });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendControllerError(res, err, "Failed to delete session");
   }
 };
 
@@ -724,61 +869,70 @@ export const importGroupParticipantsToNumberList = async (req, res) => {
   try {
     const { id, groupJid } = req.params;
     const { name = "" } = req.body || {};
-
-    const session = await WhatsAppSession.findOne({
+    const handled = await executeProviderIdempotentRequest({
+      userId: req.user._id,
       sessionId: id,
-      userId: req.user._id,
-    }).select("-credentials");
-
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        code: "SESSION_NOT_FOUND",
-        error: "Session not found",
-      });
-    }
-
-    const group = await WhatsAppService.getGroupParticipants(id, groupJid);
-    const phoneParticipants = getPhoneNumberParticipants(group);
-    const numbers = phoneParticipants.map(
-      (participant) => participant.phoneNumber,
-    );
-
-    if (numbers.length === 0) {
-      return res.status(400).json({
-        success: false,
-        code: "NO_GROUP_PHONE_NUMBERS",
-        error: "No phone numbers found in this group.",
-      });
-    }
-
-    await SubscriptionService.assertResourceLimit(req.user, "numberLists", 1);
-
-    const contactData = phoneParticipants.map((participant) => ({
-      phone: participant.phoneNumber,
-      name: participant.name,
-      group: group.subject,
-      role: participant.role,
-    }));
-
-    const list = await NumberList.create({
-      userId: req.user._id,
-      name: String(name || `${group.subject} numbers`).trim(),
-      numbers,
-      tags: ["group-import", group.subject],
-      color: randomGroupListColor(),
-      variables: ["phone", "name", "group", "role"],
-      contactData,
+      chatJid: groupJid,
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body?.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "group_participants_import",
+      payload: { sessionId: id, groupJid, name: String(name).trim() },
+      execute: async () => {
+        const session = await WhatsAppSession.findOne({
+          sessionId: id,
+          userId: req.user._id,
+        }).select("-credentials");
+        if (!session) {
+          const error = new Error("Session not found");
+          error.statusCode = 404;
+          error.code = "SESSION_NOT_FOUND";
+          throw error;
+        }
+        const group = await WhatsAppService.getGroupParticipants(id, groupJid);
+        const phoneParticipants = getPhoneNumberParticipants(group);
+        const numbers = phoneParticipants.map(
+          (participant) => participant.phoneNumber,
+        );
+        if (!numbers.length) {
+          const error = new Error("No phone numbers found in this group");
+          error.statusCode = 400;
+          error.code = "NO_GROUP_PHONE_NUMBERS";
+          throw error;
+        }
+        await SubscriptionService.assertResourceLimit(
+          req.user,
+          "numberLists",
+          1,
+        );
+        const contactData = phoneParticipants.map((participant) => ({
+          phone: participant.phoneNumber,
+          name: participant.name,
+          group: group.subject,
+          role: participant.role,
+        }));
+        const list = await NumberList.create({
+          userId: req.user._id,
+          name: String(name || `${group.subject} numbers`).trim(),
+          numbers,
+          tags: ["group-import", group.subject],
+          color: randomGroupListColor(),
+          variables: ["phone", "name", "group", "role"],
+          contactData,
+        });
+        return {
+          success: true,
+          message: "Phone numbers imported to Number Lists",
+          list: formatImportedList(list),
+          skipped:
+            group.unresolvedParticipantsCount ||
+            Math.max((group.totalParticipants || 0) - numbers.length, 0),
+        };
+      },
     });
-
-    return res.status(201).json({
-      success: true,
-      message: "Phone numbers imported to Number Lists",
-      list: formatImportedList(list),
-      skipped:
-        group.unresolvedParticipantsCount ||
-        Math.max((group.totalParticipants || 0) - numbers.length, 0),
-    });
+    return res
+      .status(handled.duplicate ? 200 : 201)
+      .json({ ...handled.response, duplicate: handled.duplicate });
   } catch (err) {
     return sendSubscriptionError(
       res,
@@ -801,11 +955,26 @@ export const reconnectSession = async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    const result = await WhatsAppService.reconnectSession(id, { force: true });
+    const handled = await executeProviderIdempotentRequest({
+      userId: req.user._id,
+      sessionId: id,
+      chatJid: "session-reconnect",
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body?.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "session_reconnect",
+      payload: { force: true },
+      execute: async () => {
+        const result = await WhatsAppService.reconnectSession(id, {
+          force: true,
+        });
+        return { success: true, status: result?.status || "connecting" };
+      },
+    });
 
-    res.json({ success: true, status: result?.status || "connecting" });
+    res.json({ ...handled.response, duplicate: handled.duplicate });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendControllerError(res, err, "Failed to reconnect session");
   }
 };
 
@@ -822,11 +991,105 @@ export const logoutSession = async (req, res) => {
       return res.status(404).json({ error: "Session not found" });
     }
 
-    await WhatsAppService.logoutSession(id);
+    const handled = await executeProviderIdempotentRequest({
+      userId: req.user._id,
+      sessionId: id,
+      chatJid: "session-logout",
+      idempotencyKey:
+        req.get("Idempotency-Key") || req.body?.clientRequestId,
+      requireKey: req.authMode === "api-key",
+      requestType: "session_logout",
+      payload: { sessionId: id },
+      execute: async () => {
+        await WhatsAppService.logoutSession(id);
+        return { success: true };
+      },
+    });
 
-    res.json({ success: true });
+    res.json({ ...handled.response, duplicate: handled.duplicate });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    sendControllerError(res, err, "Failed to log out session");
+  }
+};
+
+export const createGroupFromNumbers = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { subject, participants } = req.body || {};
+
+    // Validate subject
+    const trimmedSubject = String(subject || "").trim();
+    if (!trimmedSubject || trimmedSubject.length > 25) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_GROUP_SUBJECT",
+        error: "Group name must be between 1 and 25 characters",
+      });
+    }
+
+    // Validate participants
+    if (!Array.isArray(participants) || participants.length === 0) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_PARTICIPANTS",
+        error: "At least 1 participant phone number is required",
+      });
+    }
+
+    if (participants.length > 1000) {
+      return res.status(400).json({
+        success: false,
+        code: "TOO_MANY_PARTICIPANTS",
+        error: "A group can have at most 1000 participants",
+      });
+    }
+
+    // Validate each participant number
+    const cleanedParticipants = participants.map((p) => {
+      const digits = String(p || "").replace(/\D/g, "");
+      if (digits.length < 7 || digits.length > 15) {
+        const err = new Error(
+          `Invalid phone number: ${p}. Must contain 7-15 digits.`,
+        );
+        err.statusCode = 400;
+        err.code = "INVALID_PHONE_NUMBER";
+        throw err;
+      }
+      return digits;
+    });
+
+    // Verify session ownership
+    const session = await WhatsAppSession.findOne({
+      sessionId: id,
+      userId: req.user._id,
+    }).select("-credentials");
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        code: "SESSION_NOT_FOUND",
+        error: "Session not found",
+      });
+    }
+
+    // Create the group
+    const result = await WhatsAppService.createGroup(
+      id,
+      trimmedSubject,
+      cleanedParticipants,
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: result,
+    });
+  } catch (err) {
+    const statusCode = err.statusCode || err.status || 500;
+    return res.status(statusCode).json({
+      success: false,
+      code: err.code || undefined,
+      error: err.message || "Failed to create group",
+    });
   }
 };
 
@@ -834,6 +1097,7 @@ export default {
   createSession,
   listSessions,
   getSession,
+  updateSession,
   getSessionQR,
   getSessionGroups,
   getGroupParticipants,
@@ -842,4 +1106,5 @@ export default {
   deleteSession,
   logoutSession,
   reconnectSession,
+  createGroupFromNumbers,
 };

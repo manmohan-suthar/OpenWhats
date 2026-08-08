@@ -11,15 +11,28 @@ const numberListSchema = new mongoose.Schema(
       type: String,
       required: true,
       trim: true,
+      maxlength: 120,
     },
-    numbers: [{ type: String, trim: true }],
-    tags: [{ type: String, trim: true }],
+    numbers: {
+      type: [{ type: String, trim: true, maxlength: 32 }],
+      validate: [(value) => value.length <= 50000, "A number list can contain at most 50000 numbers"],
+    },
+    tags: {
+      type: [{ type: String, trim: true, maxlength: 80 }],
+      validate: [(value) => value.length <= 50, "A number list can contain at most 50 tags"],
+    },
     color: {
       type: String,
       default: 'bg-blue-500',
     },
-    variables: [{ type: String, trim: true }],
-    contactData: [{ type: mongoose.Schema.Types.Mixed }],
+    variables: {
+      type: [{ type: String, trim: true, maxlength: 80 }],
+      validate: [(value) => value.length <= 50, "A number list can contain at most 50 variables"],
+    },
+    contactData: {
+      type: [{ type: mongoose.Schema.Types.Mixed }],
+      validate: [(value) => value.length <= 50000, "A number list can contain at most 50000 contact rows"],
+    },
   },
   { timestamps: true },
 );

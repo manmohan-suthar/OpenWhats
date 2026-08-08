@@ -14,11 +14,13 @@ import {
   proxyFlowApiRequest,
   simulateGoogleSheetsNode,
 } from "../controllers/flowExecutionController.js";
+import blockPartnerProduct from "../middleware/blockPartnerProduct.js";
 
 const router = express.Router();
 
 // Protect all routes
 router.use(authMiddleware);
+router.use(blockPartnerProduct("Workflow automation"));
 
 // Get all flows
 router.get("/", getFlows);

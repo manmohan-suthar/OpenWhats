@@ -1,6 +1,6 @@
-const API_URL = import.meta.env.VITE_API_URL
-  ? `${import.meta.env.VITE_API_URL}/api`
-  : "/api";
+import { API_ORIGIN } from "../config/env";
+
+const API_URL = `${API_ORIGIN}/api`;
 
 const getToken = () => localStorage.getItem("token");
 
@@ -139,6 +139,18 @@ export const api = {
         method: "POST",
         headers: headers(),
         body: JSON.stringify({ name }),
+      },
+    );
+    return parseResponse(res);
+  },
+
+  async createWhatsAppGroup(sessionId, subject, participants) {
+    const res = await fetch(
+      `${API_URL}/sessions/${sessionId}/groups/create`,
+      {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ subject, participants }),
       },
     );
     return parseResponse(res);
@@ -481,6 +493,22 @@ export const api = {
 
   async updateAdminMetaSettings(payload) {
     const res = await fetch(`${API_URL}/admin/meta-settings`, {
+      method: "PUT",
+      headers: headers(),
+      body: JSON.stringify(payload),
+    });
+    return parseResponse(res);
+  },
+
+  async getDeskGoPartnerSettings() {
+    const res = await fetch(`${API_URL}/admin/deskgo-partner-settings`, {
+      headers: headers(),
+    });
+    return parseResponse(res);
+  },
+
+  async updateDeskGoPartnerSettings(payload) {
+    const res = await fetch(`${API_URL}/admin/deskgo-partner-settings`, {
       method: "PUT",
       headers: headers(),
       body: JSON.stringify(payload),

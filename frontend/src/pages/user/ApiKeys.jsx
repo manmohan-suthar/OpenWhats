@@ -20,6 +20,12 @@ import {
   ChevronDown,
   ChevronUp,
   Terminal,
+  MessageCircle,
+  Users,
+  List,
+  Workflow,
+  Bot,
+  WalletCards,
 } from "lucide-react";
 import PageHeader from "../../components/ui/PageHeader";
 import Modal from "../../components/ui/Modal";
@@ -60,10 +66,46 @@ const PERMS = [
     desc: "Send WhatsApp messages via API",
   },
   {
+    id: "send_interactive_messages",
+    label: "Interactive Messages",
+    icon: MessageCircle,
+    desc: "Send scoped Quick Actions, lists, links, and call buttons",
+  },
+  {
     id: "manage_sessions",
     label: "Manage Sessions",
     icon: Globe,
     desc: "Create and control WhatsApp sessions",
+  },
+  {
+    id: "read_chats",
+    label: "Read Chats",
+    icon: MessageCircle,
+    desc: "Read inbox chats, history, and sync status",
+  },
+  {
+    id: "read_groups",
+    label: "Read Groups",
+    icon: Users,
+    desc: "Access WhatsApp groups and participants",
+  },
+  {
+    id: "manage_number_lists",
+    label: "Number Lists",
+    icon: List,
+    desc: "Create and manage reusable contact lists",
+  },
+  {
+    id: "manage_flows",
+    label: "Workflows",
+    icon: Workflow,
+    desc: "Create and manage automation workflows",
+  },
+  {
+    id: "manage_ai_agents",
+    label: "AI Agents",
+    icon: Bot,
+    desc: "Configure AI agents and model behavior",
   },
   {
     id: "read_analytics",
@@ -77,7 +119,15 @@ const PERMS = [
     icon: Code2,
     desc: "Register and update webhook endpoints",
   },
+  {
+    id: "manage_subscriptions",
+    label: "Subscriptions",
+    icon: WalletCards,
+    desc: "Reserved for approved partner integrations",
+  },
 ];
+
+const DEFAULT_PERMISSIONS = PERMS.map((permission) => permission.id);
 
 // ── KeyCard ────────────────────────────────────────────────────────────────────
 function KeyCard({ apiKey, onRevoke, onDelete }) {
@@ -273,12 +323,7 @@ export default function ApiKeys() {
   const [form, setForm] = useState({
     name: "",
     environment: "live",
-    permissions: [
-      "send_messages",
-      "manage_sessions",
-      "read_analytics",
-      "manage_webhooks",
-    ],
+    permissions: DEFAULT_PERMISSIONS,
   });
 
   const authHeader = { Authorization: `Bearer ${token}` };
@@ -381,12 +426,7 @@ export default function ApiKeys() {
     setForm({
       name: "",
       environment: "live",
-      permissions: [
-        "send_messages",
-        "manage_sessions",
-        "read_analytics",
-        "manage_webhooks",
-      ],
+      permissions: DEFAULT_PERMISSIONS,
     });
     setShowCreate(true);
   };

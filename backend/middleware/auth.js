@@ -1,32 +1,34 @@
 import { getUserFromToken } from "../utils/auth.js";
-import { findUserByApiKey } from "../controllers/apiKeyController.js";
+import { findApiKeyPrincipal } from "../controllers/apiKeyController.js";
+import PartnerTenantService from "../services/PartnerTenantService.js";
+
+async function attachActivePartnerTenant(req) {
+  if (
+    !req.user?.managedByPartner &&
+    req.user?.authProvider !== "partner"
+  ) {
+    return;
+  }
+  const tenant = await PartnerTenantService.requireActiveForUser(req.user?._id);
+  if (tenant) req.partnerTenant = tenant;
+}
 
 const authMiddleware = async (req, res, next) => {
   try {
     // ── Check x-api-key header first ─────────────────────────────────────────
     const apiKeyHeader = (req.headers["x-api-key"] || "").trim();
     if (apiKeyHeader) {
-      console.log(
-        "\n🔐 [AUTH]",
-        req.method,
-        req.originalUrl,
-        "| x-api-key[:20]:",
-        apiKeyHeader.slice(0, 20),
-      );
-      const user = await findUserByApiKey(apiKeyHeader);
-      if (!user) {
+      const principal = await findApiKeyPrincipal(apiKeyHeader);
+      if (!principal) {
         return res.status(401).json({
           error: "API key not found or revoked",
           hint: "Generate a new key at /dashboard/api-keys",
         });
       }
-      console.log(
-        "🔐 [AUTH] ✅ API key OK — user:",
-        String(user._id),
-        user.email,
-      );
-      req.user = user;
+      req.user = principal.user;
+      req.apiKey = principal.apiKey;
       req.authMode = "api-key";
+      await attachActivePartnerTenant(req);
       return next();
     }
 
@@ -35,14 +37,6 @@ const authMiddleware = async (req, res, next) => {
     const token = header.startsWith("Bearer ")
       ? header.slice(7).trim()
       : header.trim();
-
-    console.log(
-      "\n🔐 [AUTH]",
-      req.method,
-      req.originalUrl,
-      "| token[:20]:",
-      token.slice(0, 20),
-    );
 
     if (!token) {
       return res.status(401).json({
@@ -53,26 +47,21 @@ const authMiddleware = async (req, res, next) => {
 
     // ── API key via Bearer ────────────────────────────────────────────────────
     if (token.startsWith("wac_live_") || token.startsWith("wac_test_")) {
-      console.log("🔐 [AUTH] → API key path (Bearer)");
-      const user = await findUserByApiKey(token);
-      if (!user) {
+      const principal = await findApiKeyPrincipal(token);
+      if (!principal) {
         return res.status(401).json({
           error: "API key not found or revoked",
           hint: "Generate a new key at /dashboard/api-keys",
         });
       }
-      console.log(
-        "🔐 [AUTH] ✅ API key OK — user:",
-        String(user._id),
-        user.email,
-      );
-      req.user = user;
+      req.user = principal.user;
+      req.apiKey = principal.apiKey;
       req.authMode = "api-key";
+      await attachActivePartnerTenant(req);
       return next();
     }
 
     // ── JWT path ──────────────────────────────────────────────────────────────
-    console.log("🔐 [AUTH] → JWT path");
     const user = await getUserFromToken(token);
     if (!user) {
       return res.status(401).json({
@@ -81,15 +70,18 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
-    console.log("🔐 [AUTH] ✅ JWT OK — user:", String(user._id), user.email);
     req.user = user;
     req.authMode = "jwt";
+    await attachActivePartnerTenant(req);
     next();
   } catch (err) {
     console.error("🔐 [AUTH] 💥", err.message);
-    return res
-      .status(401)
-      .json({ error: "Authentication failed", detail: err.message });
+    const status = Number(err.statusCode || 401);
+    return res.status(status).json({
+      error: err.message || "Authentication failed",
+      code: err.code || (status === 401 ? "AUTHENTICATION_FAILED" : "PARTNER_ACCESS_DENIED"),
+      ...(err.details ? { details: err.details } : {}),
+    });
   }
 };
 

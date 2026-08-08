@@ -9,8 +9,13 @@ import {
   sendInteractiveMessage,
   getMessageTypes,
 } from "../controllers/interactiveController.js";
+import authMiddleware from "../middleware/auth.js";
+import apiPermission from "../middleware/apiPermission.js";
+import partnerFeature from "../middleware/partnerFeature.js";
 
 const router = express.Router();
+
+router.use(authMiddleware);
 
 /**
  * POST /interactive
@@ -25,13 +30,22 @@ const router = express.Router();
  *   "data": { ... type-specific data ... }
  * }
  */
-router.post("/interactive", sendInteractiveMessage);
+router.post(
+  "/interactive",
+  apiPermission("send_interactive_messages"),
+  partnerFeature("whatsapp-interactive-messaging"),
+  sendInteractiveMessage,
+);
 
 /**
  * GET /interactive/types
  *
  * Get list of supported interactive message types
  */
-router.get("/interactive/types", getMessageTypes);
+router.get(
+  "/interactive/types",
+  apiPermission("send_interactive_messages"),
+  getMessageTypes,
+);
 
 export default router;

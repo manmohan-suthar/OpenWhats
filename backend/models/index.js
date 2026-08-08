@@ -10,3 +10,8 @@ export { default as ApiKey } from "./ApiKey.js";
 export { default as SubscriptionPlan } from "./SubscriptionPlan.js";
 export { default as SubscriptionSettings } from "./SubscriptionSettings.js";
 export { default as UserSubscription } from "./UserSubscription.js";
+export { default as PartnerTenant } from "./PartnerTenant.js";
+export { default as PartnerEventReceipt } from "./PartnerEventReceipt.js";
+export { default as PartnerWebhookDelivery } from "./PartnerWebhookDelivery.js";
+export { default as PartnerSettings } from "./PartnerSettings.js";
+export { default as ProviderMessageRequest } from "./ProviderMessageRequest.js";

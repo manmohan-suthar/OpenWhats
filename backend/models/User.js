@@ -19,8 +19,24 @@ const userSchema = new mongoose.Schema(
     },
     authProvider: {
       type: String,
-      enum: ["local", "google"],
+      enum: ["local", "google", "partner"],
       default: "local",
+    },
+    managedByPartner: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    partner: {
+      type: String,
+      default: "",
+      lowercase: true,
+      trim: true,
+    },
+    partnerExternalCompanyId: {
+      type: String,
+      default: "",
+      trim: true,
     },
     firebaseUid: {
       type: String,
@@ -79,9 +95,22 @@ userSchema.pre("save", async function (next) {
 });
 
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  if (!this.password) return false;
+  if (this.managedByPartner || this.authProvider === "partner" || !this.password) {
+    return false;
+  }
   return bcrypt.compare(candidatePassword, this.password);
 };
+
+userSchema.index(
+  { partner: 1, partnerExternalCompanyId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      managedByPartner: true,
+      partnerExternalCompanyId: { $type: "string" },
+    },
+  },
+);
 
 userSchema.methods.toJSON = function () {
   const obj = this.toObject();

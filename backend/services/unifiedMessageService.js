@@ -8,6 +8,7 @@ import WhatsAppService, { getSessionSocket } from "./WhatsAppService.js";
 import mediaMessageService from "./mediaMessageService.js";
 import SubscriptionService from "./SubscriptionService.js";
 import { Message } from "../models/index.js";
+import { downloadSafeRemoteMedia } from "../utils/safeRemoteMedia.js";
 
 const MEDIA_TYPES = new Set(["text", "image", "video", "audio", "document"]);
 const MEDIA_ALIASES = {
@@ -357,24 +358,29 @@ export function normalizeUnifiedPayload(body = {}) {
   };
 }
 
-function mediaInputForHeader(media) {
+async function mediaInputForHeader(media) {
   if (!media.url || media.type === "text") return null;
+  const downloaded = await downloadSafeRemoteMedia(media.url);
 
   if (media.type === "image") {
-    return { image: { url: media.url } };
+    return { image: downloaded.buffer };
   }
 
   if (media.type === "video") {
     return {
-      video: { url: media.url },
-      mimetype: media.mimeType || "video/mp4",
+      video: downloaded.buffer,
+      mimetype:
+        media.mimeType || downloaded.contentType.split(";")[0] || "video/mp4",
     };
   }
 
   if (media.type === "document") {
     return {
-      document: { url: media.url },
-      mimetype: media.mimeType || "application/pdf",
+      document: downloaded.buffer,
+      mimetype:
+        media.mimeType ||
+        downloaded.contentType.split(";")[0] ||
+        "application/pdf",
       fileName: media.filename || "document",
     };
   }
@@ -385,7 +391,7 @@ function mediaInputForHeader(media) {
 }
 
 async function buildInteractiveContent(sock, normalized) {
-  const mediaInput = mediaInputForHeader(normalized.media);
+  const mediaInput = await mediaInputForHeader(normalized.media);
   let header;
 
   if (mediaInput) {
@@ -504,6 +510,7 @@ class UnifiedMessageService {
 
     try {
       await SubscriptionService.assertMessageQuota({ _id: userId }, 1);
+      await msgDoc.save();
 
       const interactiveMessage = await buildInteractiveContent(sock, normalized);
       const msg = generateWAMessageFromContent(
@@ -521,16 +528,26 @@ class UnifiedMessageService {
       await sock.relayMessage(jid, msg.message, {
         messageId: msg.key.id,
       });
-
-      await SubscriptionService.consumeMessageQuota(userId, 1);
-
       msgDoc.status = "sent";
       msgDoc.sentAt = new Date();
-      await msgDoc.save();
+      msgDoc.providerMessageId = msg.key.id || null;
+      const bookkeeping = await Promise.allSettled([
+        SubscriptionService.consumeMessageQuota(userId, 1),
+        msgDoc.save(),
+      ]);
+      for (const result of bookkeeping) {
+        if (result.status === "rejected") {
+          console.error("Interactive post-send bookkeeping failed", {
+            sessionId: session.sessionId,
+            messageId: msg.key.id,
+            error: result.reason?.message || String(result.reason),
+          });
+        }
+      }
 
       return {
         success: true,
-        messageId: `msg_${msgDoc._id}`,
+        messageId: msg.key.id || `msg_${msgDoc._id}`,
         to: jid.replace("@s.whatsapp.net", ""),
         status: "sent",
         type: normalized.media.type,

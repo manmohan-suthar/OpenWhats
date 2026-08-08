@@ -1,6 +1,7 @@
 import { WhatsAppSession, Message } from "../models/index.js";
 import CampaignService from "../services/CampaignService.js";
 import mongoose from "mongoose";
+import crypto from "crypto";
 import { writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -8,6 +9,7 @@ import { sendSubscriptionError } from "../utils/subscription.js";
 import unifiedMessageService, {
   isUnifiedMessagePayload,
 } from "../services/unifiedMessageService.js";
+import { executeProviderIdempotentRequest } from "../services/ProviderRequestIdempotencyService.js";
 
 export const sendMessage = async (req, res) => {
   let tempFilePath = null;
@@ -17,13 +19,36 @@ export const sendMessage = async (req, res) => {
     const source = req.authMode === "api-key" ? "api" : "ui";
 
     if (isUnifiedMessagePayload(body)) {
-      const result = await unifiedMessageService.sendUnifiedMessage({
+      const mediaBase64 = body.mediaBase64 || body.media_base64 || null;
+      const handled = await executeProviderIdempotentRequest({
         userId: req.user._id,
-        body,
-        source,
+        sessionId: body.sessionId || body.session,
+        chatJid: String(body.phoneNumber || body.to || ""),
+        idempotencyKey: req.get("Idempotency-Key"),
+        requireKey: req.authMode === "api-key",
+        requestType: "unified_message",
+        payload: {
+          ...body,
+          ...(mediaBase64
+            ? {
+                mediaBase64: undefined,
+                media_base64: undefined,
+                mediaHash: crypto
+                  .createHash("sha256")
+                  .update(Buffer.from(mediaBase64, "base64"))
+                  .digest("hex"),
+              }
+            : {}),
+        },
+        execute: () =>
+          unifiedMessageService.sendUnifiedMessage({
+            userId: req.user._id,
+            body,
+            source,
+          }),
       });
 
-      return res.json(result);
+      return res.json({ ...handled.response, duplicate: handled.duplicate });
     }
 
     // Accept both field name styles:
@@ -44,6 +69,14 @@ export const sendMessage = async (req, res) => {
 
     // If payload is an interactive template (type present), forward to interactive handler
     if (type) {
+      if (req.authMode === "api-key") {
+        return res.status(400).json({
+          success: false,
+          code: "USE_PROVIDER_INTERACTIVE_ENDPOINT",
+          error:
+            "API keys must send interactive messages through /api/v1/sessions/:sessionId/chats/:chatJid/interactive with Idempotency-Key",
+        });
+      }
       try {
         // Lazy import to avoid circular deps
         const { sendInteractiveMessage } =
@@ -126,18 +159,40 @@ export const sendMessage = async (req, res) => {
     }
 
     try {
-      const result = await CampaignService.sendSingleMessage(
-        req.user._id,
+      const handled = await executeProviderIdempotentRequest({
+        userId: req.user._id,
         sessionId,
-        phoneNumber,
-        message,
-        contactName,
-        mediaPath,
-        mediaType,
-        { source },
-      );
+        chatJid: String(phoneNumber),
+        idempotencyKey: req.get("Idempotency-Key"),
+        requireKey: req.authMode === "api-key",
+        requestType: "message",
+        payload: {
+          phoneNumber: String(phoneNumber),
+          message,
+          contactName: contactName || "",
+          mediaType: mediaType || null,
+          mediaName: mediaName || null,
+          mediaHash: mediaBase64
+            ? crypto
+                .createHash("sha256")
+                .update(Buffer.from(mediaBase64, "base64"))
+                .digest("hex")
+            : null,
+        },
+        execute: () =>
+          CampaignService.sendSingleMessage(
+            req.user._id,
+            sessionId,
+            phoneNumber,
+            message,
+            contactName,
+            mediaPath,
+            mediaType,
+            { source },
+          ),
+      });
 
-      res.json(result);
+      res.json({ ...handled.response, duplicate: handled.duplicate });
     } finally {
       // Clean up temp file
       if (tempFilePath) {
@@ -205,7 +260,8 @@ export const getSessionMessages = async (req, res) => {
 
 export const updateMessageStatus = async (req, res) => {
   try {
-    const { messageId, status } = req.body;
+    const messageId = String(req.params.messageId || "").trim();
+    const status = String(req.body?.status || "").trim().toLowerCase();
 
     if (!messageId || !status) {
       return res
@@ -221,7 +277,38 @@ export const updateMessageStatus = async (req, res) => {
       });
     }
 
-    // Build update object
+    if (!mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ error: "messageId is invalid" });
+    }
+    const current = await Message.findById(messageId);
+    if (!current) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+    const ownedSession = await WhatsAppSession.exists({
+      _id: current.sessionId,
+      userId: req.user._id,
+    });
+    if (!ownedSession) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+    const allowedTransitions = {
+      pending: ["sent", "failed", "delivered", "read"],
+      sent: ["failed", "delivered", "read"],
+      failed: ["sent", "delivered", "read"],
+      delivered: ["read"],
+      read: [],
+    };
+    if (
+      status !== current.status &&
+      !allowedTransitions[current.status]?.includes(status)
+    ) {
+      return res.status(409).json({
+        success: false,
+        code: "MESSAGE_STATUS_REGRESSION",
+        error: `Message status cannot move from ${current.status} to ${status}`,
+      });
+    }
+
     const updateData = { status };
     if (status === "delivered") {
       updateData.deliveredAt = new Date();
@@ -229,13 +316,20 @@ export const updateMessageStatus = async (req, res) => {
       updateData.readAt = new Date();
     }
 
-    // Update message
-    const message = await Message.findByIdAndUpdate(messageId, updateData, {
-      new: true,
-    });
-
+    const message =
+      status === current.status
+        ? current
+        : await Message.findOneAndUpdate(
+            { _id: messageId, sessionId: current.sessionId, status: current.status },
+            updateData,
+            { new: true },
+          );
     if (!message) {
-      return res.status(404).json({ error: "Message not found" });
+      return res.status(409).json({
+        success: false,
+        code: "MESSAGE_STATUS_CHANGED",
+        error: "Message status changed concurrently; fetch it and retry",
+      });
     }
 
     res.json({

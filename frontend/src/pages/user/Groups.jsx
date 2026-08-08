@@ -7,11 +7,15 @@ import {
   FileSpreadsheet,
   FileText,
   Loader,
+  Plus,
   RefreshCw,
   Search,
   Smartphone,
   Upload,
   Users,
+  Check,
+  X,
+  List,
 } from "lucide-react";
 import PageHeader from "../../components/ui/PageHeader";
 import Modal from "../../components/ui/Modal";
@@ -80,6 +84,17 @@ export default function Groups() {
   const [downloadingFormat, setDownloadingFormat] = useState("");
   const [importingGroup, setImportingGroup] = useState("");
 
+  // ── Create Group Modal state ──────────────────────────────────────────────
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [createGroupName, setCreateGroupName] = useState("");
+  const [createSession, setCreateSession] = useState("");
+  const [numberLists, setNumberLists] = useState([]);
+  const [loadingLists, setLoadingLists] = useState(false);
+  const [selectedListIds, setSelectedListIds] = useState([]);
+  const [participantSearch, setParticipantSearch] = useState("");
+  const [selectedParticipants, setSelectedParticipants] = useState(new Set());
+  const [creatingGroup, setCreatingGroup] = useState(false);
+
   useEffect(() => {
     if (!isAuthenticated) {
       navigate("/login");
@@ -117,6 +132,27 @@ export default function Groups() {
     (sum, group) => sum + Number(group.participantsCount || 0),
     0,
   );
+
+  // ── All unique numbers from selected number lists ─────────────────────────
+  const allParticipantNumbers = useMemo(() => {
+    const nums = new Set();
+    for (const list of numberLists) {
+      if (selectedListIds.includes(list.id)) {
+        for (const num of list.numbers || []) {
+          if (num) nums.add(num);
+        }
+      }
+    }
+    return [...nums];
+  }, [numberLists, selectedListIds]);
+
+  const filteredParticipants = useMemo(() => {
+    const q = participantSearch.trim().toLowerCase();
+    if (!q) return allParticipantNumbers;
+    return allParticipantNumbers.filter((num) =>
+      num.toLowerCase().includes(q),
+    );
+  }, [allParticipantNumbers, participantSearch]);
 
   async function loadSessions() {
     try {
@@ -201,6 +237,113 @@ export default function Groups() {
     }
   }
 
+  // ── Create Group handlers ─────────────────────────────────────────────────
+  function openCreateModal() {
+    setShowCreateModal(true);
+    setCreateGroupName("");
+    setCreateSession(sessions[0]?.sessionId || "");
+    setSelectedListIds([]);
+    setSelectedParticipants(new Set());
+    setParticipantSearch("");
+    setNumberLists([]);
+    loadNumberLists();
+  }
+
+  function closeCreateModal() {
+    setShowCreateModal(false);
+    setCreateGroupName("");
+    setSelectedListIds([]);
+    setSelectedParticipants(new Set());
+    setParticipantSearch("");
+  }
+
+  async function loadNumberLists() {
+    try {
+      setLoadingLists(true);
+      const data = await api.getNumberLists();
+      setNumberLists(Array.isArray(data.lists) ? data.lists : []);
+    } catch (err) {
+      setToast({ type: "error", text: "Failed to load number lists" });
+      setTimeout(() => setToast(null), 3000);
+    } finally {
+      setLoadingLists(false);
+    }
+  }
+
+  function toggleListSelection(listId) {
+    setSelectedListIds((prev) =>
+      prev.includes(listId)
+        ? prev.filter((id) => id !== listId)
+        : [...prev, listId],
+    );
+    // Clear participant selection when lists change
+    setSelectedParticipants(new Set());
+  }
+
+  function toggleParticipant(number) {
+    setSelectedParticipants((prev) => {
+      const next = new Set(prev);
+      if (next.has(number)) {
+        next.delete(number);
+      } else {
+        next.add(number);
+      }
+      return next;
+    });
+  }
+
+  function selectAllParticipants() {
+    if (selectedParticipants.size === filteredParticipants.length) {
+      setSelectedParticipants(new Set());
+    } else {
+      setSelectedParticipants(new Set(filteredParticipants));
+    }
+  }
+
+  async function handleCreateGroup() {
+    if (!createSession || !createGroupName.trim() || selectedParticipants.size === 0) return;
+
+    try {
+      setCreatingGroup(true);
+      const result = await api.createWhatsAppGroup(
+        createSession,
+        createGroupName.trim(),
+        [...selectedParticipants],
+      );
+
+      if (result.success === false) {
+        throw new Error(result.error || "Failed to create group");
+      }
+
+      setToast({
+        type: "success",
+        text: `Group "${createGroupName.trim()}" created with ${selectedParticipants.size} participants!`,
+      });
+      closeCreateModal();
+
+      // Refresh groups list if same session
+      if (createSession === selectedSession) {
+        setTimeout(() => loadGroups(), 1500);
+      }
+    } catch (err) {
+      setToast({ type: "error", text: err.message || "Failed to create group" });
+    } finally {
+      setCreatingGroup(false);
+      setTimeout(() => setToast(null), 4000);
+    }
+  }
+
+  // ── Color map for number list badges ──────────────────────────────────────
+  const COLOR_MAP = {
+    "bg-blue-500": "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+    "bg-emerald-500": "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+    "bg-violet-500": "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+    "bg-amber-500": "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+    "bg-rose-500": "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
+    "bg-cyan-500": "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300",
+    "bg-teal-500": "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300",
+  };
+
   return (
     <div className="page space-y-5">
       <PageHeader
@@ -208,6 +351,14 @@ export default function Groups() {
         subtitle={`${groups.length} groups from selected session`}
       >
         <div className="flex items-center gap-2">
+          <button
+            onClick={openCreateModal}
+            disabled={sessions.length === 0}
+            className="btn-primary gap-2 disabled:opacity-50"
+          >
+            <Plus size={15} />
+            Create Group
+          </button>
           <button
             onClick={() => loadGroups()}
             disabled={!selectedSession || loadingGroups}
@@ -406,6 +557,7 @@ export default function Groups() {
         </div>
       </div>
 
+      {/* Download Modal */}
       <Modal
         open={!!downloadGroup}
         onClose={() => setDownloadGroup(null)}
@@ -444,6 +596,219 @@ export default function Groups() {
               ),
             )}
           </div>
+        </div>
+      </Modal>
+
+      {/* ── Create Group Modal ─────────────────────────────────────────────── */}
+      <Modal
+        open={showCreateModal}
+        onClose={closeCreateModal}
+        title="Create WhatsApp Group"
+        size="xl"
+        footer={
+          <>
+            <button onClick={closeCreateModal} className="btn-secondary gap-1.5">
+              <X size={14} />
+              Cancel
+            </button>
+            <button
+              onClick={handleCreateGroup}
+              disabled={
+                creatingGroup ||
+                !createGroupName.trim() ||
+                !createSession ||
+                selectedParticipants.size === 0
+              }
+              className="btn-primary gap-1.5 disabled:opacity-50"
+            >
+              {creatingGroup ? (
+                <Loader size={14} className="animate-spin" />
+              ) : (
+                <Plus size={14} />
+              )}
+              {creatingGroup
+                ? "Creating..."
+                : `Create Group (${selectedParticipants.size})`}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-5">
+          {/* Group Name */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+              Group Name <span className="text-red-400">*</span>
+            </label>
+            <input
+              value={createGroupName}
+              onChange={(e) => setCreateGroupName(e.target.value.slice(0, 25))}
+              placeholder="Enter group name..."
+              maxLength={25}
+              className="input"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              {createGroupName.length}/25 characters
+            </p>
+          </div>
+
+          {/* Session Selector */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+              WhatsApp Session <span className="text-red-400">*</span>
+            </label>
+            <select
+              value={createSession}
+              onChange={(e) => setCreateSession(e.target.value)}
+              className="input"
+            >
+              <option value="">Select a session...</option>
+              {sessions.map((session) => (
+                <option key={session.sessionId} value={session.sessionId}>
+                  {session.name} - {session.phoneNumber || session.sessionId}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Number Lists Selection */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+              Select Number Lists
+            </label>
+            {loadingLists ? (
+              <div className="flex items-center gap-2 py-4 justify-center">
+                <Loader size={16} className="animate-spin text-primary-500" />
+                <span className="text-xs text-slate-400">Loading lists...</span>
+              </div>
+            ) : numberLists.length === 0 ? (
+              <div className="py-4 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
+                <List size={20} className="mx-auto text-slate-300 mb-1.5" />
+                <p className="text-xs text-slate-400">
+                  No number lists found. Create one first.
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[200px] overflow-y-auto pr-1">
+                {numberLists.map((list) => {
+                  const isSelected = selectedListIds.includes(list.id);
+                  const badgeClass = COLOR_MAP[list.color] || COLOR_MAP["bg-blue-500"];
+                  return (
+                    <button
+                      key={list.id}
+                      onClick={() => toggleListSelection(list.id)}
+                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
+                        isSelected
+                          ? "border-primary-300 bg-primary-50/60 dark:border-primary-700 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-800"
+                          : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
+                      }`}
+                    >
+                      <div
+                        className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all ${
+                          isSelected
+                            ? "bg-primary-500 text-white"
+                            : "border border-slate-300 dark:border-slate-600"
+                        }`}
+                      >
+                        {isSelected && <Check size={12} strokeWidth={3} />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
+                          {list.name}
+                        </p>
+                        <span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded-md mt-0.5 ${badgeClass}`}>
+                          {list.count} numbers
+                        </span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Participant Picker */}
+          {selectedListIds.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                  Select Participants ({selectedParticipants.size}/{allParticipantNumbers.length})
+                </label>
+                <button
+                  onClick={selectAllParticipants}
+                  className="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
+                >
+                  {selectedParticipants.size === filteredParticipants.length && filteredParticipants.length > 0
+                    ? "Deselect All"
+                    : "Select All"}
+                </button>
+              </div>
+
+              {/* Participant Search */}
+              <div className="relative mb-2">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  value={participantSearch}
+                  onChange={(e) => setParticipantSearch(e.target.value)}
+                  placeholder="Search phone numbers..."
+                  className="input pl-8 text-sm"
+                />
+              </div>
+
+              {allParticipantNumbers.length > 1000 && (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 mb-2">
+                  <AlertCircle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                    WhatsApp limits groups to ~1000 participants. Only select up to 1000.
+                  </p>
+                </div>
+              )}
+
+              <div className="rounded-xl border border-slate-200 dark:border-slate-700 max-h-[240px] overflow-y-auto">
+                {filteredParticipants.length === 0 ? (
+                  <div className="py-6 text-center">
+                    <p className="text-xs text-slate-400">No numbers match your search</p>
+                  </div>
+                ) : (
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {filteredParticipants.map((number) => {
+                      const isChecked = selectedParticipants.has(number);
+                      return (
+                        <button
+                          key={number}
+                          onClick={() => toggleParticipant(number)}
+                          className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left transition-colors ${
+                            isChecked
+                              ? "bg-primary-50/50 dark:bg-primary-900/10"
+                              : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                          }`}
+                        >
+                          <div
+                            className={`w-4.5 h-4.5 rounded flex items-center justify-center flex-shrink-0 transition-all ${
+                              isChecked
+                                ? "bg-primary-500 text-white"
+                                : "border border-slate-300 dark:border-slate-600"
+                            }`}
+                            style={{ width: 18, height: 18 }}
+                          >
+                            {isChecked && <Check size={11} strokeWidth={3} />}
+                          </div>
+                          <span className="text-sm font-mono text-slate-700 dark:text-slate-300">
+                            {number}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {selectedParticipants.size > 0 && (
+                <p className="text-[11px] text-primary-600 dark:text-primary-400 mt-1.5 font-medium">
+                  ✓ {selectedParticipants.size} participant{selectedParticipants.size !== 1 ? "s" : ""} selected
+                </p>
+              )}
+            </div>
+          )}
         </div>
       </Modal>
 

@@ -637,6 +637,210 @@ function MetaOAuthSettingsSection() {
   );
 }
 
+function DeskGoPartnerSettingsSection() {
+  const emptySecrets = {
+    partnerSecret: "",
+    apiKeyDerivationSecret: "",
+    webhookSecret: "",
+  };
+  const [settings, setSettings] = useState({
+    enabled: true,
+    partnerId: "deskgo",
+    webhookUrl: "",
+    secrets: {},
+  });
+  const [secretValues, setSecretValues] = useState(emptySecrets);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api
+      .getDeskGoPartnerSettings()
+      .then((res) => res.success && setSettings(res.data))
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setError("");
+    try {
+      const payload = {
+        enabled: settings.enabled,
+        partnerId: settings.partnerId,
+        webhookUrl: settings.webhookUrl,
+      };
+      Object.entries(secretValues).forEach(([key, value]) => {
+        if (value.trim()) payload[key] = value.trim();
+      });
+      const res = await api.updateDeskGoPartnerSettings(payload);
+      setSettings(res.data);
+      setSecretValues(emptySecrets);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const secretFields = [
+    ["partnerSecret", "Inbound signing secret", "DESKGO_PARTNER_SECRET"],
+    [
+      "apiKeyDerivationSecret",
+      "API key derivation secret",
+      "DESKGO_API_KEY_DERIVATION_SECRET",
+    ],
+    ["webhookSecret", "Outbound webhook secret", "DESKGO_WEBHOOK_SECRET"],
+  ];
+
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-5 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 flex items-center justify-center">
+            <Server size={16} className="text-slate-600 dark:text-slate-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+              DeskGo Partner Integration
+            </p>
+            <p className="text-xs text-slate-500">
+              Signed entitlements, managed credentials and WhatsApp webhooks
+            </p>
+          </div>
+        </div>
+        <button
+          onClick={save}
+          disabled={loading || saving}
+          className="btn-primary btn-sm gap-2 disabled:opacity-50"
+        >
+          {saving ? <Loader size={13} className="animate-spin" /> : <Save size={13} />}
+          {saved ? "Saved!" : "Save"}
+        </button>
+      </div>
+      <div className="p-5 space-y-4">
+        {error && (
+          <div className="px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-600 dark:text-red-400">
+            {error}
+          </div>
+        )}
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <Loader size={22} className="animate-spin text-primary-500" />
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                  Enable DeskGo integration
+                </p>
+                <p className="text-xs text-slate-500">
+                  Disabled state rejects partner sync and stops event delivery.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setSettings((current) => ({
+                    ...current,
+                    enabled: !current.enabled,
+                  }))
+                }
+                className={`relative inline-flex w-10 h-5 rounded-full transition-colors ${settings.enabled ? "bg-primary-600" : "bg-slate-300 dark:bg-slate-600"}`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${settings.enabled ? "translate-x-5" : ""}`}
+                />
+              </button>
+            </div>
+            <div className="grid sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  Partner ID
+                </label>
+                <input
+                  className="input font-mono text-xs"
+                  value={settings.partnerId}
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      partnerId: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                  DeskGo Webhook URL
+                </label>
+                <input
+                  className="input font-mono text-xs"
+                  type="url"
+                  value={settings.webhookUrl}
+                  placeholder="https://deskgo.example/api/integrations/openwhats/webhook"
+                  onChange={(event) =>
+                    setSettings((current) => ({
+                      ...current,
+                      webhookUrl: event.target.value,
+                    }))
+                  }
+                />
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-slate-500">
+                Secrets are encrypted and never returned by the API.
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowSecrets((value) => !value)}
+                className="text-xs font-semibold text-primary-600"
+              >
+                {showSecrets ? "Hide input" : "Show input"}
+              </button>
+            </div>
+            <div className="grid lg:grid-cols-3 gap-4">
+              {secretFields.map(([key, label, envName]) => {
+                const state = settings.secrets?.[key];
+                return (
+                  <div key={key}>
+                    <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">
+                      {label}
+                    </label>
+                    <input
+                      className="input font-mono text-xs"
+                      type={showSecrets ? "text" : "password"}
+                      value={secretValues[key]}
+                      placeholder={state?.configured ? "Configured — leave blank to keep" : "Minimum 32 characters"}
+                      onChange={(event) =>
+                        setSecretValues((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }))
+                      }
+                    />
+                    <p className="mt-1 text-[10px] text-slate-500">
+                      {state?.configured
+                        ? `Active source: ${state.source}`
+                        : `Fallback: ${envName}`}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AdminSettings() {
   const [saved, setSaved] = useState(false);
   const handleSave = () => {
@@ -792,6 +996,8 @@ export default function AdminSettings() {
       <OpenRouterSettingsSection />
 
       <MetaOAuthSettingsSection />
+
+      <DeskGoPartnerSettingsSection />
 
       {/* Notifications */}
       <SettingsSection
