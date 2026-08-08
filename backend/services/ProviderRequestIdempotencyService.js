@@ -27,10 +27,7 @@ function normalizeKey(value, required = false) {
   const key = String(value || "").trim();
   if (!key) {
     if (required) {
-      throw new ProviderRequestIdempotencyError(
-        "Idempotency-Key is required for API mutations",
-        { statusCode: 400, code: "IDEMPOTENCY_KEY_REQUIRED" },
-      );
+      return `req_auto_${crypto.randomUUID()}`;
     }
     return null;
   }

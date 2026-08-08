@@ -438,8 +438,10 @@ function MethodBadge({ method }) {
 function EndpointCard({ endpoint, apiKey, values = {} }) {
   const path = hydrate(endpoint.path, values);
   const body = hydrate(endpoint.body, values);
+  const isMutation = ["POST", "PUT", "PATCH", "DELETE"].includes(endpoint.method);
+  const idempotencyHeader = isMutation ? ` \\\n  -H "Idempotency-Key: key_${Math.floor(Date.now() / 1000)}"` : "";
   const request = `curl -X ${endpoint.method} "${API_ORIGIN}${path}" \\
-  -H "x-api-key: ${apiKey}"${body ? ` \\\n  -H "Content-Type: application/json" \\\n  -d '${body.replace(/\n/g, "\n  ")}'` : ""}`;
+  -H "x-api-key: ${apiKey}"${idempotencyHeader}${body ? ` \\\n  -H "Content-Type: application/json" \\\n  -d '${body.replace(/\n/g, "\n  ")}'` : ""}`;
 
   return (
     <article className="card overflow-hidden border border-slate-200 dark:border-slate-800">
@@ -452,9 +454,16 @@ function EndpointCard({ endpoint, apiKey, values = {} }) {
         </div>
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">{endpoint.title}</h3>
         <p className="mt-1 text-xs leading-5 text-slate-500">{endpoint.description}</p>
-        <span className="mt-3 inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 font-mono text-[10px] text-slate-500 dark:bg-slate-800">
-          <Lock size={9} /> {endpoint.permission}
-        </span>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 font-mono text-[10px] text-slate-500 dark:bg-slate-800">
+            <Lock size={9} /> {endpoint.permission}
+          </span>
+          {isMutation && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-1 font-mono text-[10px] text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+              Requires Idempotency-Key header
+            </span>
+          )}
+        </div>
       </div>
       <div className="space-y-3 p-5">
         {body && <CodeBlock title="JSON body" value={body} />}
@@ -614,11 +623,15 @@ export default function ApiDocs() {
               <CodeBlock title="Test authentication by listing sessions" value={quickStart} />
 
               <section className="card p-5">
-                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Authentication headers</h3>
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  <CodeBlock title="Recommended" value={`x-api-key: ${apiKey}`} />
-                  <CodeBlock title="Also supported" value={`Authorization: Bearer ${apiKey}`} />
+                <h3 className="text-sm font-semibold text-slate-900 dark:text-white">Authentication & Request headers</h3>
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <CodeBlock title="API Key Header (Recommended)" value={`x-api-key: ${apiKey}`} />
+                  <CodeBlock title="Bearer Token (Also supported)" value={`Authorization: Bearer ${apiKey}`} />
+                  <CodeBlock title="Idempotency Key (Required for POST/PUT/PATCH/DELETE)" value={`Idempotency-Key: your_unique_key_here`} />
                 </div>
+                <p className="mt-3 text-xs text-amber-600 dark:text-amber-400">
+                  ⚠️ Note: All mutation requests (POST, PUT, PATCH, DELETE) using an API key require an <code>Idempotency-Key</code> HTTP header (minimum 8 characters, e.g. <code>Idempotency-Key: req_12345678</code>) or a <code>clientRequestId</code> JSON body field to prevent accidental duplicate actions.
+                </p>
               </section>
 
               <section>
