@@ -16,6 +16,12 @@ import {
   Check,
   X,
   List,
+  Layers,
+  Sparkles,
+  CheckSquare,
+  Square,
+  ChevronRight,
+  Settings,
 } from "lucide-react";
 import PageHeader from "../../components/ui/PageHeader";
 import Modal from "../../components/ui/Modal";
@@ -69,6 +75,16 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+function formatGroupSuffix(index, style = "underscore_2") {
+  const num = index + 1;
+  const pad2 = String(num).padStart(2, "0");
+  if (style === "underscore_2") return `_${pad2}`;
+  if (style === "space_2") return ` ${pad2}`;
+  if (style === "part") return ` Part ${num}`;
+  if (style === "dash") return ` - ${pad2}`;
+  return `_${pad2}`;
+}
+
 export default function Groups() {
   const navigate = useNavigate();
   const { isAuthenticated } = useAuth();
@@ -94,6 +110,21 @@ export default function Groups() {
   const [participantSearch, setParticipantSearch] = useState("");
   const [selectedParticipants, setSelectedParticipants] = useState(new Set());
   const [creatingGroup, setCreatingGroup] = useState(false);
+
+  // ── Advanced Auto Multi-Group Creation options ──────────────────────────────
+  const [autoSplit, setAutoSplit] = useState(true);
+  const [contactsPerGroup, setContactsPerGroup] = useState(950);
+  const [suffixStyle, setSuffixStyle] = useState("underscore_2");
+
+  // ── Multi-group progress tracking ─────────────────────────────────────────
+  const [multiProgress, setMultiProgress] = useState({
+    active: false,
+    current: 0,
+    total: 0,
+    currentGroupName: "",
+    successCount: 0,
+    errorCount: 0,
+  });
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -146,13 +177,29 @@ export default function Groups() {
     return [...nums];
   }, [numberLists, selectedListIds]);
 
+  // When number lists change, default select all numbers automatically
+  useEffect(() => {
+    if (selectedListIds.length > 0) {
+      setSelectedParticipants(new Set(allParticipantNumbers));
+    } else {
+      setSelectedParticipants(new Set());
+    }
+  }, [allParticipantNumbers, selectedListIds]);
+
   const filteredParticipants = useMemo(() => {
     const q = participantSearch.trim().toLowerCase();
-    if (!q) return allParticipantNumbers;
-    return allParticipantNumbers.filter((num) =>
-      num.toLowerCase().includes(q),
-    );
+    if (!q) return allParticipantNumbers.slice(0, 300); // Limit DOM nodes for fast rendering
+    return allParticipantNumbers
+      .filter((num) => num.toLowerCase().includes(q))
+      .slice(0, 300);
   }, [allParticipantNumbers, participantSearch]);
+
+  // Total groups calculation
+  const totalSelectedCount = selectedParticipants.size;
+  const chunkLimit = Math.max(10, Math.min(1000, Number(contactsPerGroup) || 950));
+  const estimatedGroupCount = autoSplit && totalSelectedCount > 0
+    ? Math.ceil(totalSelectedCount / chunkLimit)
+    : 1;
 
   async function loadSessions() {
     try {
@@ -245,22 +292,28 @@ export default function Groups() {
     setSelectedListIds([]);
     setSelectedParticipants(new Set());
     setParticipantSearch("");
+    setAutoSplit(true);
+    setContactsPerGroup(950);
+    setSuffixStyle("underscore_2");
+    setMultiProgress({ active: false, current: 0, total: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
     setNumberLists([]);
     loadNumberLists();
   }
 
   function closeCreateModal() {
+    if (multiProgress.active) return; // Prevent closing while in progress
     setShowCreateModal(false);
     setCreateGroupName("");
     setSelectedListIds([]);
     setSelectedParticipants(new Set());
     setParticipantSearch("");
+    setMultiProgress({ active: false, current: 0, total: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
   }
 
   async function loadNumberLists() {
     try {
       setLoadingLists(true);
-      const data = await api.getNumberLists();
+      const data = await api.getNumberLists({ includeNumbers: true });
       setNumberLists(Array.isArray(data.lists) ? data.lists : []);
     } catch (err) {
       setToast({ type: "error", text: "Failed to load number lists" });
@@ -276,8 +329,6 @@ export default function Groups() {
         ? prev.filter((id) => id !== listId)
         : [...prev, listId],
     );
-    // Clear participant selection when lists change
-    setSelectedParticipants(new Set());
   }
 
   function toggleParticipant(number) {
@@ -293,43 +344,130 @@ export default function Groups() {
   }
 
   function selectAllParticipants() {
-    if (selectedParticipants.size === filteredParticipants.length) {
+    if (selectedParticipants.size === allParticipantNumbers.length) {
       setSelectedParticipants(new Set());
     } else {
-      setSelectedParticipants(new Set(filteredParticipants));
+      setSelectedParticipants(new Set(allParticipantNumbers));
     }
   }
 
   async function handleCreateGroup() {
-    if (!createSession || !createGroupName.trim() || selectedParticipants.size === 0) return;
+    const baseName = createGroupName.trim();
+    if (!createSession || !baseName || selectedParticipants.size === 0) return;
 
-    try {
-      setCreatingGroup(true);
-      const result = await api.createWhatsAppGroup(
-        createSession,
-        createGroupName.trim(),
-        [...selectedParticipants],
-      );
+    const participantsArray = [...selectedParticipants];
+    const totalCount = participantsArray.length;
 
-      if (result.success === false) {
-        throw new Error(result.error || "Failed to create group");
+    // Single Group creation (without auto-split)
+    if (!autoSplit || totalCount <= chunkLimit) {
+      if (totalCount > 1000) {
+        setToast({ type: "error", text: "Single group cannot exceed 1000 contacts. Enable Auto-Split to create multiple groups." });
+        setTimeout(() => setToast(null), 4000);
+        return;
       }
 
-      setToast({
-        type: "success",
-        text: `Group "${createGroupName.trim()}" created with ${selectedParticipants.size} participants!`,
-      });
-      closeCreateModal();
+      try {
+        setCreatingGroup(true);
+        const result = await api.createWhatsAppGroup(
+          createSession,
+          baseName.slice(0, 25),
+          participantsArray,
+        );
 
-      // Refresh groups list if same session
-      if (createSession === selectedSession) {
-        setTimeout(() => loadGroups(), 1500);
+        if (result.success === false) {
+          throw new Error(result.error || "Failed to create group");
+        }
+
+        setToast({
+          type: "success",
+          text: `Group "${baseName}" created with ${totalCount} participants!`,
+        });
+        closeCreateModal();
+
+        if (createSession === selectedSession) {
+          setTimeout(() => loadGroups(), 1500);
+        }
+      } catch (err) {
+        setToast({ type: "error", text: err.message || "Failed to create group" });
+        setTimeout(() => setToast(null), 4000);
+      } finally {
+        setCreatingGroup(false);
       }
-    } catch (err) {
-      setToast({ type: "error", text: err.message || "Failed to create group" });
-    } finally {
-      setCreatingGroup(false);
-      setTimeout(() => setToast(null), 4000);
+      return;
+    }
+
+    // ── Multi-Group Sequential Creation ──────────────────────────────────────
+    const chunks = [];
+    for (let i = 0; i < totalCount; i += chunkLimit) {
+      chunks.push(participantsArray.slice(i, i + chunkLimit));
+    }
+
+    const totalGroupsToCreate = chunks.length;
+    setCreatingGroup(true);
+    setMultiProgress({
+      active: true,
+      current: 0,
+      total: totalGroupsToCreate,
+      currentGroupName: "",
+      successCount: 0,
+      errorCount: 0,
+    });
+
+    let successCount = 0;
+    let errorCount = 0;
+
+    for (let i = 0; i < chunks.length; i++) {
+      const suffix = totalGroupsToCreate > 1 ? formatGroupSuffix(i, suffixStyle) : "";
+      const maxBaseLength = 25 - suffix.length;
+      const groupSubject = `${baseName.slice(0, maxBaseLength)}${suffix}`;
+
+      setMultiProgress((prev) => ({
+        ...prev,
+        current: i + 1,
+        currentGroupName: groupSubject,
+      }));
+
+      try {
+        const res = await api.createWhatsAppGroup(
+          createSession,
+          groupSubject,
+          chunks[i],
+        );
+        if (res.success !== false) {
+          successCount++;
+        } else {
+          errorCount++;
+        }
+      } catch (err) {
+        console.error(`Error creating group ${groupSubject}:`, err);
+        errorCount++;
+      }
+
+      // Small delay between group creations to avoid rate limits
+      if (i < chunks.length - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+      }
+    }
+
+    setCreatingGroup(false);
+    setMultiProgress({
+      active: false,
+      current: totalGroupsToCreate,
+      total: totalGroupsToCreate,
+      currentGroupName: "",
+      successCount,
+      errorCount,
+    });
+
+    setToast({
+      type: successCount > 0 ? "success" : "error",
+      text: `Completed: ${successCount} group${successCount !== 1 ? "s" : ""} created successfully${errorCount > 0 ? `, ${errorCount} failed` : ""}!`,
+    });
+
+    closeCreateModal();
+
+    if (createSession === selectedSession) {
+      setTimeout(() => loadGroups(), 1500);
     }
   }
 
@@ -599,217 +737,329 @@ export default function Groups() {
         </div>
       </Modal>
 
-      {/* ── Create Group Modal ─────────────────────────────────────────────── */}
+      {/* ── Create Group Modal (Advanced Auto-Split System) ───────────────── */}
       <Modal
         open={showCreateModal}
         onClose={closeCreateModal}
-        title="Create WhatsApp Group"
+        title={multiProgress.active ? "Creating WhatsApp Groups..." : "Create WhatsApp Groups"}
         size="xl"
         footer={
-          <>
-            <button onClick={closeCreateModal} className="btn-secondary gap-1.5">
-              <X size={14} />
-              Cancel
-            </button>
-            <button
-              onClick={handleCreateGroup}
-              disabled={
-                creatingGroup ||
-                !createGroupName.trim() ||
-                !createSession ||
-                selectedParticipants.size === 0
-              }
-              className="btn-primary gap-1.5 disabled:opacity-50"
-            >
-              {creatingGroup ? (
-                <Loader size={14} className="animate-spin" />
-              ) : (
-                <Plus size={14} />
-              )}
-              {creatingGroup
-                ? "Creating..."
-                : `Create Group (${selectedParticipants.size})`}
-            </button>
-          </>
+          multiProgress.active ? null : (
+            <>
+              <button onClick={closeCreateModal} className="btn-secondary gap-1.5">
+                <X size={14} />
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateGroup}
+                disabled={
+                  creatingGroup ||
+                  !createGroupName.trim() ||
+                  !createSession ||
+                  selectedParticipants.size === 0
+                }
+                className="btn-primary gap-1.5 disabled:opacity-50"
+              >
+                {creatingGroup ? (
+                  <Loader size={14} className="animate-spin" />
+                ) : estimatedGroupCount > 1 ? (
+                  <Sparkles size={14} />
+                ) : (
+                  <Plus size={14} />
+                )}
+                {creatingGroup
+                  ? "Processing..."
+                  : estimatedGroupCount > 1
+                  ? `Create ${estimatedGroupCount} Groups (${selectedParticipants.size.toLocaleString()} Contacts)`
+                  : `Create Group (${selectedParticipants.size.toLocaleString()})`}
+              </button>
+            </>
+          )
         }
       >
-        <div className="space-y-5">
-          {/* Group Name */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
-              Group Name <span className="text-red-400">*</span>
-            </label>
-            <input
-              value={createGroupName}
-              onChange={(e) => setCreateGroupName(e.target.value.slice(0, 25))}
-              placeholder="Enter group name..."
-              maxLength={25}
-              className="input"
-            />
-            <p className="text-[11px] text-slate-400 mt-1">
-              {createGroupName.length}/25 characters
-            </p>
-          </div>
+        {multiProgress.active ? (
+          /* Progress View */
+          <div className="py-6 space-y-6 text-center">
+            <div className="w-16 h-16 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto text-primary-600">
+              <Loader size={32} className="animate-spin" />
+            </div>
+            <div>
+              <h4 className="text-lg font-bold text-slate-900 dark:text-white">
+                Creating Group {multiProgress.current} of {multiProgress.total}
+              </h4>
+              <p className="text-sm text-slate-500 mt-1">
+                Creating <span className="font-semibold text-primary-600 dark:text-primary-400">"{multiProgress.currentGroupName}"</span>
+              </p>
+            </div>
 
-          {/* Session Selector */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
-              WhatsApp Session <span className="text-red-400">*</span>
-            </label>
-            <select
-              value={createSession}
-              onChange={(e) => setCreateSession(e.target.value)}
-              className="input"
-            >
-              <option value="">Select a session...</option>
-              {sessions.map((session) => (
-                <option key={session.sessionId} value={session.sessionId}>
-                  {session.name} - {session.phoneNumber || session.sessionId}
-                </option>
-              ))}
-            </select>
+            {/* Progress Bar */}
+            <div className="space-y-2 max-w-md mx-auto">
+              <div className="w-full h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-primary-500 to-primary-600 transition-all duration-300"
+                  style={{
+                    width: `${Math.round((multiProgress.current / multiProgress.total) * 100)}%`,
+                  }}
+                />
+              </div>
+              <p className="text-xs text-slate-400">
+                {Math.round((multiProgress.current / multiProgress.total) * 100)}% Completed — Please keep this window open
+              </p>
+            </div>
           </div>
+        ) : (
+          /* Setup View */
+          <div className="space-y-5">
+            {/* Group Name Base */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+                Group Name / Base Title <span className="text-red-400">*</span>
+              </label>
+              <input
+                value={createGroupName}
+                onChange={(e) => setCreateGroupName(e.target.value.slice(0, 25))}
+                placeholder="e.g. Testing, VIP Support, Campaign..."
+                maxLength={25}
+                className="input"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                {createGroupName.length}/25 characters
+              </p>
+            </div>
 
-          {/* Number Lists Selection */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
-              Select Number Lists
-            </label>
-            {loadingLists ? (
-              <div className="flex items-center gap-2 py-4 justify-center">
-                <Loader size={16} className="animate-spin text-primary-500" />
-                <span className="text-xs text-slate-400">Loading lists...</span>
-              </div>
-            ) : numberLists.length === 0 ? (
-              <div className="py-4 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
-                <List size={20} className="mx-auto text-slate-300 mb-1.5" />
-                <p className="text-xs text-slate-400">
-                  No number lists found. Create one first.
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[200px] overflow-y-auto pr-1">
-                {numberLists.map((list) => {
-                  const isSelected = selectedListIds.includes(list.id);
-                  const badgeClass = COLOR_MAP[list.color] || COLOR_MAP["bg-blue-500"];
-                  return (
-                    <button
-                      key={list.id}
-                      onClick={() => toggleListSelection(list.id)}
-                      className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
-                        isSelected
-                          ? "border-primary-300 bg-primary-50/60 dark:border-primary-700 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-800"
-                          : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
-                      }`}
-                    >
-                      <div
-                        className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all ${
-                          isSelected
-                            ? "bg-primary-500 text-white"
-                            : "border border-slate-300 dark:border-slate-600"
-                        }`}
-                      >
-                        {isSelected && <Check size={12} strokeWidth={3} />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
-                          {list.name}
-                        </p>
-                        <span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded-md mt-0.5 ${badgeClass}`}>
-                          {list.count} numbers
-                        </span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+            {/* Session Selector */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+                WhatsApp Session <span className="text-red-400">*</span>
+              </label>
+              <select
+                value={createSession}
+                onChange={(e) => setCreateSession(e.target.value)}
+                className="input"
+              >
+                <option value="">Select a connected session...</option>
+                {sessions.map((session) => (
+                  <option key={session.sessionId} value={session.sessionId}>
+                    {session.name} - {session.phoneNumber || session.sessionId}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-          {/* Participant Picker */}
-          {selectedListIds.length > 0 && (
+            {/* Number Lists Selection */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                  Select Participants ({selectedParticipants.size}/{allParticipantNumbers.length})
+                  Select Number Lists
                 </label>
-                <button
-                  onClick={selectAllParticipants}
-                  className="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
-                >
-                  {selectedParticipants.size === filteredParticipants.length && filteredParticipants.length > 0
-                    ? "Deselect All"
-                    : "Select All"}
-                </button>
-              </div>
-
-              {/* Participant Search */}
-              <div className="relative mb-2">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  value={participantSearch}
-                  onChange={(e) => setParticipantSearch(e.target.value)}
-                  placeholder="Search phone numbers..."
-                  className="input pl-8 text-sm"
-                />
-              </div>
-
-              {allParticipantNumbers.length > 1000 && (
-                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 mb-2">
-                  <AlertCircle size={14} className="text-amber-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                    WhatsApp limits groups to ~1000 participants. Only select up to 1000.
-                  </p>
-                </div>
-              )}
-
-              <div className="rounded-xl border border-slate-200 dark:border-slate-700 max-h-[240px] overflow-y-auto">
-                {filteredParticipants.length === 0 ? (
-                  <div className="py-6 text-center">
-                    <p className="text-xs text-slate-400">No numbers match your search</p>
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredParticipants.map((number) => {
-                      const isChecked = selectedParticipants.has(number);
-                      return (
-                        <button
-                          key={number}
-                          onClick={() => toggleParticipant(number)}
-                          className={`w-full flex items-center gap-3 px-3.5 py-2.5 text-left transition-colors ${
-                            isChecked
-                              ? "bg-primary-50/50 dark:bg-primary-900/10"
-                              : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
-                          }`}
-                        >
-                          <div
-                            className={`w-4.5 h-4.5 rounded flex items-center justify-center flex-shrink-0 transition-all ${
-                              isChecked
-                                ? "bg-primary-500 text-white"
-                                : "border border-slate-300 dark:border-slate-600"
-                            }`}
-                            style={{ width: 18, height: 18 }}
-                          >
-                            {isChecked && <Check size={11} strokeWidth={3} />}
-                          </div>
-                          <span className="text-sm font-mono text-slate-700 dark:text-slate-300">
-                            {number}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
+                {selectedListIds.length > 0 && (
+                  <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                    {allParticipantNumbers.length.toLocaleString()} Total Contacts
+                  </span>
                 )}
               </div>
 
-              {selectedParticipants.size > 0 && (
-                <p className="text-[11px] text-primary-600 dark:text-primary-400 mt-1.5 font-medium">
-                  ✓ {selectedParticipants.size} participant{selectedParticipants.size !== 1 ? "s" : ""} selected
-                </p>
+              {loadingLists ? (
+                <div className="flex items-center gap-2 py-4 justify-center">
+                  <Loader size={16} className="animate-spin text-primary-500" />
+                  <span className="text-xs text-slate-400">Loading lists...</span>
+                </div>
+              ) : numberLists.length === 0 ? (
+                <div className="py-4 text-center rounded-xl border border-dashed border-slate-200 dark:border-slate-700">
+                  <List size={20} className="mx-auto text-slate-300 mb-1.5" />
+                  <p className="text-xs text-slate-400">
+                    No number lists found. Create one first.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[180px] overflow-y-auto pr-1">
+                  {numberLists.map((list) => {
+                    const isSelected = selectedListIds.includes(list.id);
+                    const badgeClass = COLOR_MAP[list.color] || COLOR_MAP["bg-blue-500"];
+                    return (
+                      <button
+                        key={list.id}
+                        onClick={() => toggleListSelection(list.id)}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
+                          isSelected
+                            ? "border-primary-300 bg-primary-50/60 dark:border-primary-700 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-800"
+                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
+                        }`}
+                      >
+                        <div
+                          className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all ${
+                            isSelected
+                              ? "bg-primary-500 text-white"
+                              : "border border-slate-300 dark:border-slate-600"
+                          }`}
+                        >
+                          {isSelected && <Check size={12} strokeWidth={3} />}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-slate-800 dark:text-slate-200 truncate">
+                            {list.name}
+                          </p>
+                          <span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold rounded-md mt-0.5 ${badgeClass}`}>
+                            {list.count.toLocaleString()} numbers
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
-          )}
-        </div>
+
+            {/* ── Multi-Group Splitting Configuration ──────────────────────────── */}
+            {selectedListIds.length > 0 && (
+              <div className="p-4 rounded-xl border border-primary-200 dark:border-primary-800/50 bg-primary-50/40 dark:bg-primary-900/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Layers size={16} className="text-primary-600" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                      Auto-Split Into Multiple Groups
+                    </span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={autoSplit}
+                      onChange={(e) => setAutoSplit(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary-600" />
+                  </label>
+                </div>
+
+                {autoSplit ? (
+                  <div className="space-y-3 pt-1">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                          Contacts Per Group (Max 1000)
+                        </label>
+                        <input
+                          type="number"
+                          min={10}
+                          max={1000}
+                          value={contactsPerGroup}
+                          onChange={(e) => setContactsPerGroup(Math.min(1000, Math.max(10, Number(e.target.value) || 950)))}
+                          className="input text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                          Group Naming Format
+                        </label>
+                        <select
+                          value={suffixStyle}
+                          onChange={(e) => setSuffixStyle(e.target.value)}
+                          className="input text-xs"
+                        >
+                          <option value="underscore_2">Base_01, Base_02...</option>
+                          <option value="space_2">Base 01, Base 02...</option>
+                          <option value="dash">Base - 01, Base - 02...</option>
+                          <option value="part">Base Part 1, Base Part 2...</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {createGroupName.trim() && (
+                      <div className="p-3 rounded-lg bg-white dark:bg-slate-900 border border-primary-200 dark:border-primary-800/40 text-xs">
+                        <div className="flex items-center justify-between text-primary-700 dark:text-primary-300 font-medium">
+                          <span>📊 Will create <strong>{estimatedGroupCount} groups</strong> sequentially</span>
+                          <span>{selectedParticipants.size.toLocaleString()} Contacts</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-1 font-mono truncate">
+                          Names: {createGroupName.trim()}{formatGroupSuffix(0, suffixStyle)}, {createGroupName.trim()}{formatGroupSuffix(1, suffixStyle)}...
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    Auto-split is OFF. All selected contacts (up to 1,000) will be added into 1 single group.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Participant Picker */}
+            {selectedListIds.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+                    Select Participants ({selectedParticipants.size.toLocaleString()}/{allParticipantNumbers.length.toLocaleString()})
+                  </label>
+                  <button
+                    onClick={selectAllParticipants}
+                    className="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
+                  >
+                    {selectedParticipants.size === allParticipantNumbers.length && allParticipantNumbers.length > 0
+                      ? "Deselect All"
+                      : "Select All"}
+                  </button>
+                </div>
+
+                {/* Participant Search */}
+                <div className="relative mb-2">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    value={participantSearch}
+                    onChange={(e) => setParticipantSearch(e.target.value)}
+                    placeholder="Search phone numbers..."
+                    className="input pl-8 text-sm"
+                  />
+                </div>
+
+                <div className="rounded-xl border border-slate-200 dark:border-slate-700 max-h-[180px] overflow-y-auto">
+                  {filteredParticipants.length === 0 ? (
+                    <div className="py-6 text-center">
+                      <p className="text-xs text-slate-400">No numbers match your search</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                      {filteredParticipants.map((number) => {
+                        const isChecked = selectedParticipants.has(number);
+                        return (
+                          <button
+                            key={number}
+                            onClick={() => toggleParticipant(number)}
+                            className={`w-full flex items-center gap-3 px-3.5 py-2 text-left transition-colors ${
+                              isChecked
+                                ? "bg-primary-50/50 dark:bg-primary-900/10"
+                                : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                            }`}
+                          >
+                            <div
+                              className={`rounded flex items-center justify-center flex-shrink-0 transition-all ${
+                                isChecked
+                                  ? "bg-primary-500 text-white"
+                                  : "border border-slate-300 dark:border-slate-600"
+                              }`}
+                              style={{ width: 18, height: 18 }}
+                            >
+                              {isChecked && <Check size={11} strokeWidth={3} />}
+                            </div>
+                            <span className="text-xs font-mono text-slate-700 dark:text-slate-300">
+                              {number}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {allParticipantNumbers.length > 300 && (
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Showing top 300 numbers for fast rendering. All {selectedParticipants.size.toLocaleString()} selected numbers will be processed.
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
 
       {toast && (

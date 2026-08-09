@@ -487,20 +487,17 @@ export const listSessions = async (req, res) => {
       .select("-credentials")
       .sort({ createdAt: -1 });
 
-    await Promise.all(
-      sessions.map((session) => {
-        if (
-          !["connected", "connecting", "disconnected"].includes(session.status)
-        ) {
-          return Promise.resolve();
-        }
-
-        return WhatsAppService.ensureSessionRecovery(
+    // Non-blocking background session recovery check
+    sessions.forEach((session) => {
+      if (
+        ["connected", "connecting", "disconnected"].includes(session.status)
+      ) {
+        WhatsAppService.ensureSessionRecovery(
           session.sessionId,
           "list_sessions",
         ).catch(() => null);
-      }),
-    );
+      }
+    });
 
     const sessionsWithStatus = sessions.map((session) => {
       const liveSession = WhatsAppService.getLiveSessionSnapshot(session);

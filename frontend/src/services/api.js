@@ -300,8 +300,9 @@ export const api = {
     return parseResponse(res);
   },
 
-  async getNumberLists() {
-    const res = await fetch(`${API_URL}/number-lists`, { headers: headers() });
+  async getNumberLists(options = {}) {
+    const query = options?.includeNumbers ? "?includeNumbers=true" : "";
+    const res = await fetch(`${API_URL}/number-lists${query}`, { headers: headers() });
     return parseResponse(res);
   },
 

@@ -60,11 +60,13 @@ function detectNumberColumn(headers) {
 }
 
 function normalizePhone(raw) {
-  const digits = String(raw || '').replace(/\D/g, '');
-  if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`;
+  const str = String(raw || '').trim();
+  if (!str) return null;
+  const digits = str.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return null;
+  if (str.startsWith('+')) return `+${digits}`;
   if (digits.length === 10 && !digits.startsWith('91')) return `+91${digits}`;
-  if (digits.length > 10) return `+${digits}`;
-  return null;
+  return `+${digits}`;
 }
 
 // ── Demo CSV ───────────────────────────────────────────────────────────────────
@@ -295,9 +297,27 @@ function CreateListModal({ open, onClose, onSave, saving }) {
         </>
       }
     >
-      <div className="space-y-4">
-        <div>
-          <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">List Name *</label>
+      {saving ? (
+        <div className="py-10 text-center space-y-4">
+          <div className="w-14 h-14 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto text-primary-600">
+            <Loader size={28} className="animate-spin" />
+          </div>
+          <div>
+            <h4 className="text-base font-bold text-slate-900 dark:text-white">
+              Uploading & Creating Number List...
+            </h4>
+            <p className="text-xs text-slate-500 mt-1">
+              Parsing contacts and saving {finalCount > 0 ? finalCount.toLocaleString() : ""} rows to database. Please wait...
+            </p>
+          </div>
+          <div className="w-full max-w-sm mx-auto h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+            <div className="h-full bg-gradient-to-r from-primary-500 to-primary-600 animate-pulse w-full" />
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5">List Name *</label>
           <input className="input" placeholder="e.g. Leads March 2026" value={name} onChange={e => setName(e.target.value)} />
         </div>
 
@@ -545,6 +565,7 @@ function CreateListModal({ open, onClose, onSave, saving }) {
           <input className="input" placeholder="leads, customers, vip  (comma separated)" value={tags} onChange={e => setTags(e.target.value)} />
         </div>
       </div>
+      )}
     </Modal>
   );
 }
@@ -1131,12 +1152,17 @@ export default function NumberLists() {
     }
   };
 
+  const [openingViewId, setOpeningViewId] = useState(null);
+
   const openView = async (list) => {
     try {
+      setOpeningViewId(list.id);
       const data = await api.getNumberList(list.id);
       setViewList(data.error ? list : data.list);
     } catch {
       setViewList(list);
+    } finally {
+      setOpeningViewId(null);
     }
   };
 
@@ -1345,10 +1371,11 @@ export default function NumberLists() {
                 <div className="flex gap-1">
                   <button
                     onClick={e => { e.stopPropagation(); openView(list); }}
-                    className="p-1.5 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-900/20 hover:text-primary-600 text-slate-400 transition-colors"
+                    disabled={openingViewId === list.id}
+                    className="p-1.5 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-900/20 hover:text-primary-600 text-slate-400 transition-colors disabled:opacity-50"
                     title="View Contacts"
                   >
-                    <Eye size={13} />
+                    {openingViewId === list.id ? <Loader size={13} className="animate-spin text-primary-600" /> : <Eye size={13} />}
                   </button>
                   <button
                     onClick={e => { e.stopPropagation(); handleDuplicate(list); }}

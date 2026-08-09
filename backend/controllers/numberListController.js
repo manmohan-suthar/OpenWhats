@@ -18,8 +18,8 @@ function randomColor() {
   return COLORS[Math.floor(Math.random() * COLORS.length)];
 }
 
-const MAX_NUMBERS_PER_LIST = 50_000;
-const MAX_CONTACT_DATA_BYTES = 8 * 1024 * 1024;
+const MAX_NUMBERS_PER_LIST = 100_000;
+const MAX_CONTACT_DATA_BYTES = 30 * 1024 * 1024;
 
 function inputError(message, code = "NUMBER_LIST_INPUT_INVALID") {
   const error = new Error(message);
@@ -45,20 +45,34 @@ function cleanStringArray(value, label, maxItems, maxLength) {
   if (!Array.isArray(value) || value.length > maxItems) {
     throw inputError(`${label} must contain at most ${maxItems} items`);
   }
-  const output = value.map((item) => String(item || "").trim());
-  if (output.some((item) => !item || item.length > maxLength)) {
-    throw inputError(`${label} contains an invalid value`);
+  const set = new Set();
+  for (let i = 0; i < value.length; i++) {
+    const item = String(value[i] || "").trim();
+    if (!item || item.length > maxLength) {
+      throw inputError(`${label} contains an invalid value`);
+    }
+    set.add(item);
   }
-  return [...new Set(output)];
+  return Array.from(set);
 }
 
 function cleanNumbers(value) {
-  const numbers = cleanStringArray(value, "numbers", MAX_NUMBERS_PER_LIST, 32);
-  if (numbers.some((number) => {
-    const digits = number.replace(/\D/g, "");
-    return digits.length < 7 || digits.length > 15;
-  })) throw inputError("Each phone number must contain 7 to 15 digits", "NUMBER_LIST_PHONE_INVALID");
-  return numbers;
+  if (!Array.isArray(value) || value.length > MAX_NUMBERS_PER_LIST) {
+    throw inputError(`numbers must contain at most ${MAX_NUMBERS_PER_LIST} items`);
+  }
+  const set = new Set();
+  for (let i = 0; i < value.length; i++) {
+    const item = String(value[i] || "").trim();
+    if (!item || item.length > 32) {
+      throw inputError("numbers contains an invalid value");
+    }
+    const digits = item.replace(/\D/g, "");
+    if (digits.length < 7 || digits.length > 15) {
+      throw inputError("Each phone number must contain 7 to 15 digits", "NUMBER_LIST_PHONE_INVALID");
+    }
+    set.add(item);
+  }
+  return Array.from(set);
 }
 
 function cleanContactData(value) {
@@ -79,7 +93,7 @@ function cleanContactData(value) {
     }));
   });
   if (Buffer.byteLength(JSON.stringify(rows), "utf8") > MAX_CONTACT_DATA_BYTES) {
-    throw inputError("contactData exceeds the 8 MB request limit", "NUMBER_LIST_CONTACT_DATA_TOO_LARGE");
+    throw inputError("contactData exceeds the 30 MB request limit", "NUMBER_LIST_CONTACT_DATA_TOO_LARGE");
   }
   return rows;
 }
@@ -100,25 +114,49 @@ function cleanListPayload(body, { partial = false } = {}) {
 }
 
 function formatList(list) {
+  const numCount = Array.isArray(list.numbers) ? list.numbers.length : 0;
+  const dataCount = Array.isArray(list.contactData) ? list.contactData.length : 0;
   return {
     id: list._id.toString(),
     name: list.name,
-    count: list.numbers.length,
-    numbers: list.numbers,
-    tags: list.tags,
-    color: list.color,
+    count: Math.max(numCount, dataCount),
+    numbers: list.numbers || [],
+    tags: list.tags || [],
+    color: list.color || "bg-blue-500",
     variables: list.variables || [],
     contactData: list.contactData || [],
-    created: list.createdAt ? list.createdAt.toISOString().slice(0, 10) : null,
+    created: list.createdAt ? new Date(list.createdAt).toISOString().slice(0, 10) : null,
   };
 }
 
 export const getLists = async (req, res) => {
   try {
-    const lists = await NumberList.find({ userId: req.user._id }).sort({
-      createdAt: -1,
+    const includeNumbers = req.query.includeNumbers === "true";
+    const projection = includeNumbers
+      ? "-contactData"
+      : "name tags color variables createdAt numbers contactData";
+
+    const lists = await NumberList.find({ userId: req.user._id })
+      .select(projection)
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const formattedLists = lists.map((list) => {
+      const numbersArr = Array.isArray(list.numbers) ? list.numbers : [];
+      const dataArr = Array.isArray(list.contactData) ? list.contactData : [];
+      return {
+        id: list._id.toString(),
+        name: list.name,
+        count: Math.max(numbersArr.length, dataArr.length),
+        numbers: includeNumbers ? numbersArr : [],
+        tags: list.tags || [],
+        color: list.color || "bg-blue-500",
+        variables: list.variables || [],
+        contactData: [],
+        created: list.createdAt ? new Date(list.createdAt).toISOString().slice(0, 10) : null,
+      };
     });
-    const formattedLists = lists.map(formatList);
+
     res.json({ lists: formattedLists });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -166,7 +204,7 @@ export const getList = async (req, res) => {
     const list = await NumberList.findOne({
       _id: req.params.id,
       userId: req.user._id,
-    });
+    }).lean();
     if (!list) return res.status(404).json({ error: "List not found" });
     res.json({ list: formatList(list) });
   } catch (err) {

@@ -15,7 +15,7 @@ const numberListSchema = new mongoose.Schema(
     },
     numbers: {
       type: [{ type: String, trim: true, maxlength: 32 }],
-      validate: [(value) => value.length <= 50000, "A number list can contain at most 50000 numbers"],
+      validate: [(value) => value.length <= 100000, "A number list can contain at most 100000 numbers"],
     },
     tags: {
       type: [{ type: String, trim: true, maxlength: 80 }],
@@ -31,7 +31,7 @@ const numberListSchema = new mongoose.Schema(
     },
     contactData: {
       type: [{ type: mongoose.Schema.Types.Mixed }],
-      validate: [(value) => value.length <= 50000, "A number list can contain at most 50000 contact rows"],
+      validate: [(value) => value.length <= 100000, "A number list can contain at most 100000 contact rows"],
     },
   },
   { timestamps: true },
