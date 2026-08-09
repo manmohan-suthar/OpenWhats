@@ -310,8 +310,18 @@ function CreateListModal({ open, onClose, onSave, saving }) {
               Parsing contacts and saving {finalCount > 0 ? finalCount.toLocaleString() : ""} rows to database. Please wait...
             </p>
           </div>
-          <div className="w-full max-w-sm mx-auto h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-primary-500 to-primary-600 animate-pulse w-full" />
+          <div className="w-full max-w-sm mx-auto h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden relative">
+            <style>{`
+              @keyframes slideLoading {
+                0% { left: -40%; width: 40%; }
+                50% { left: 30%; width: 50%; }
+                100% { left: 100%; width: 40%; }
+              }
+            `}</style>
+            <div
+              className="absolute top-0 bottom-0 bg-gradient-to-r from-primary-500 via-emerald-400 to-primary-600 rounded-full"
+              style={{ animation: "slideLoading 1.6s ease-in-out infinite" }}
+            />
           </div>
         </div>
       ) : (

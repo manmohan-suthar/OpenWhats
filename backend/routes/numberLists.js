@@ -17,5 +17,6 @@ router.put('/:id', apiPermission('manage_number_lists'), numberListController.up
 router.delete('/:id', apiPermission('manage_number_lists'), numberListController.deleteList);
 router.post('/:id/duplicate', apiPermission('manage_number_lists'), blockPartnerProduct('Number-list transformations'), numberListController.duplicateList);
 router.post('/:id/filter', apiPermission('manage_number_lists'), blockPartnerProduct('Number-list transformations'), numberListController.filterList);
+router.post('/:id/append-batch', apiPermission('manage_number_lists'), numberListController.appendBatch);
 
 export default router;

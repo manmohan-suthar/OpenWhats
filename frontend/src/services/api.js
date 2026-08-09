@@ -324,6 +324,15 @@ export const api = {
     return parseResponse(res);
   },
 
+  async appendNumberListBatch(id, numbers, contactData) {
+    const res = await fetch(`${API_URL}/number-lists/${id}/append-batch`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ numbers, contactData }),
+    });
+    return parseResponse(res);
+  },
+
   async deleteNumberList(id) {
     const res = await fetch(`${API_URL}/number-lists/${id}`, {
       method: "DELETE",

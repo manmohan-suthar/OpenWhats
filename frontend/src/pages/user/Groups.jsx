@@ -403,12 +403,16 @@ export default function Groups() {
     }
 
     const totalGroupsToCreate = chunks.length;
+    const startTime = Date.now();
     setCreatingGroup(true);
     setMultiProgress({
       active: true,
-      current: 0,
+      current: 1,
       total: totalGroupsToCreate,
       currentGroupName: "",
+      processedContacts: 0,
+      totalContacts: totalCount,
+      etaSeconds: Math.ceil(totalGroupsToCreate * 1.5),
       successCount: 0,
       errorCount: 0,
     });
@@ -421,10 +425,20 @@ export default function Groups() {
       const maxBaseLength = 25 - suffix.length;
       const groupSubject = `${baseName.slice(0, maxBaseLength)}${suffix}`;
 
+      const completed = i;
+      const processedContacts = Math.min(totalCount, completed * chunkLimit);
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const avgTimePerGroup = completed > 0 ? elapsedSec / completed : 1.5;
+      const remainingGroups = totalGroupsToCreate - completed;
+      const etaSeconds = Math.max(1, Math.ceil(remainingGroups * avgTimePerGroup));
+
       setMultiProgress((prev) => ({
         ...prev,
         current: i + 1,
         currentGroupName: groupSubject,
+        processedContacts,
+        totalContacts: totalCount,
+        etaSeconds,
       }));
 
       try {
@@ -779,32 +793,42 @@ export default function Groups() {
       >
         {multiProgress.active ? (
           /* Progress View */
-          <div className="py-6 space-y-6 text-center">
+          <div className="py-8 space-y-6 text-center">
             <div className="w-16 h-16 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto text-primary-600">
               <Loader size={32} className="animate-spin" />
             </div>
             <div>
-              <h4 className="text-lg font-bold text-slate-900 dark:text-white">
-                Creating Group {multiProgress.current} of {multiProgress.total}
+              <h4 className="text-xl font-bold text-slate-900 dark:text-white">
+                {Math.round((multiProgress.current / multiProgress.total) * 100)}% Completed
               </h4>
-              <p className="text-sm text-slate-500 mt-1">
-                Creating <span className="font-semibold text-primary-600 dark:text-primary-400">"{multiProgress.currentGroupName}"</span>
+              <p className="text-sm font-semibold text-primary-600 dark:text-primary-400 mt-1">
+                Creating Group {multiProgress.current} of {multiProgress.total}: "{multiProgress.currentGroupName}"
               </p>
+              {multiProgress.totalContacts > 0 && (
+                <p className="text-xs text-slate-400 mt-0.5 font-medium">
+                  {(multiProgress.processedContacts || 0).toLocaleString()} of {multiProgress.totalContacts.toLocaleString()} contacts added
+                </p>
+              )}
             </div>
 
             {/* Progress Bar */}
             <div className="space-y-2 max-w-md mx-auto">
               <div className="w-full h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
                 <div
-                  className="h-full bg-gradient-to-r from-primary-500 to-primary-600 transition-all duration-300"
+                  className="h-full bg-gradient-to-r from-emerald-500 to-primary-600 transition-all duration-300 rounded-full"
                   style={{
-                    width: `${Math.round((multiProgress.current / multiProgress.total) * 100)}%`,
+                    width: `${Math.max(5, Math.round((multiProgress.current / multiProgress.total) * 100))}%`,
                   }}
                 />
               </div>
-              <p className="text-xs text-slate-400">
-                {Math.round((multiProgress.current / multiProgress.total) * 100)}% Completed — Please keep this window open
-              </p>
+              <div className="flex items-center justify-between text-xs text-slate-400 px-1">
+                <span>Safe creation (~1.2s delay per group)</span>
+                {multiProgress.etaSeconds > 0 && (
+                  <span className="font-medium text-slate-600 dark:text-slate-300">
+                    ⏱️ ~{multiProgress.etaSeconds}s remaining
+                  </span>
+                )}
+              </div>
             </div>
           </div>
         ) : (

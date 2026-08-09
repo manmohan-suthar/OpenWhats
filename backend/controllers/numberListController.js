@@ -467,6 +467,31 @@ export const filterList = async (req, res) => {
   }
 };
 
+export const appendBatch = async (req, res) => {
+  try {
+    validId(req.params.id);
+    const { numbers, contactData } = req.body || {};
+    const cleanNum = cleanNumbers(numbers || []);
+    const cleanData = cleanContactData(contactData || []);
+
+    const list = await NumberList.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user._id },
+      {
+        $push: {
+          numbers: { $each: cleanNum },
+          contactData: { $each: cleanData },
+        },
+      },
+      { new: true },
+    ).lean();
+
+    if (!list) return res.status(404).json({ error: "List not found" });
+    res.json({ success: true, list: formatList(list) });
+  } catch (err) {
+    res.status(err.statusCode || 500).json({ success: false, error: err.message });
+  }
+};
+
 export default {
   getLists,
   createList,
@@ -476,4 +501,5 @@ export default {
   duplicateList,
   mergeLists,
   filterList,
+  appendBatch,
 };
