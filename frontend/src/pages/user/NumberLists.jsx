@@ -178,7 +178,7 @@ function analyzeIndianNumbers(raw) {
 }
 
 // ── CreateListModal ────────────────────────────────────────────────────────────
-function CreateListModal({ open, onClose, onSave, saving }) {
+function CreateListModal({ open, onClose, onSave, saving, uploadProgress }) {
   const [tab, setTab] = useState('csv');
   const [name, setName] = useState('');
   const [tags, setTags] = useState('');
@@ -273,6 +273,7 @@ function CreateListModal({ open, onClose, onSave, saving }) {
   };
 
   const handleClose = () => {
+    if (saving || uploadProgress?.active) return;
     setName(''); setNumbers(''); setManualInput(''); setManualNumbers([]);
     setTags(''); setCsvState(null); setCsvError(''); setAutoFix(true);
     onClose();
@@ -288,40 +289,49 @@ function CreateListModal({ open, onClose, onSave, saving }) {
       title="Create Number List"
       size="lg"
       footer={
-        <>
-          <button onClick={handleClose} className="btn-secondary btn-sm">Cancel</button>
-          <button onClick={handleSave} disabled={saving || !name || finalCount === 0} className="btn-primary btn-sm gap-2 disabled:opacity-50">
-            {saving ? <Loader size={13} className="animate-spin" /> : <List size={13} />}
-            Create List {finalCount > 0 && `(${finalCount.toLocaleString()})`}
-          </button>
-        </>
+        saving || uploadProgress?.active ? null : (
+          <>
+            <button onClick={handleClose} className="btn-secondary btn-sm">Cancel</button>
+            <button onClick={handleSave} disabled={saving || !name || finalCount === 0} className="btn-primary btn-sm gap-2 disabled:opacity-50">
+              <List size={13} />
+              Create List {finalCount > 0 && `(${finalCount.toLocaleString()})`}
+            </button>
+          </>
+        )
       }
     >
-      {saving ? (
-        <div className="py-10 text-center space-y-4">
-          <div className="w-14 h-14 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto text-primary-600">
-            <Loader size={28} className="animate-spin" />
+      {saving || uploadProgress?.active ? (
+        <div className="py-8 text-center space-y-5">
+          <div className="w-16 h-16 rounded-2xl bg-primary-50 dark:bg-primary-900/30 flex items-center justify-center mx-auto text-primary-600">
+            <Loader size={32} className="animate-spin" />
           </div>
           <div>
-            <h4 className="text-base font-bold text-slate-900 dark:text-white">
-              Uploading & Creating Number List...
+            <h4 className="text-xl font-bold text-slate-900 dark:text-white">
+              {uploadProgress?.percent || 0}% Completed
             </h4>
-            <p className="text-xs text-slate-500 mt-1">
-              Parsing contacts and saving {finalCount > 0 ? finalCount.toLocaleString() : ""} rows to database. Please wait...
+            <p className="text-sm font-semibold text-primary-600 dark:text-primary-400 mt-1">
+              {(uploadProgress?.currentCount || 0).toLocaleString()} of {(uploadProgress?.totalCount || finalCount).toLocaleString()} contacts saved
             </p>
           </div>
-          <div className="w-full max-w-sm mx-auto h-2.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden relative">
-            <style>{`
-              @keyframes slideLoading {
-                0% { left: -40%; width: 40%; }
-                50% { left: 30%; width: 50%; }
-                100% { left: 100%; width: 40%; }
-              }
-            `}</style>
-            <div
-              className="absolute top-0 bottom-0 bg-gradient-to-r from-primary-500 via-emerald-400 to-primary-600 rounded-full"
-              style={{ animation: "slideLoading 1.6s ease-in-out infinite" }}
-            />
+
+          {/* Real Progress Bar */}
+          <div className="space-y-2 max-w-md mx-auto">
+            <div className="w-full h-3.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden p-0.5">
+              <div
+                className="h-full bg-gradient-to-r from-emerald-500 to-primary-600 transition-all duration-300 rounded-full"
+                style={{
+                  width: `${Math.max(5, uploadProgress?.percent || 0)}%`,
+                }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-xs text-slate-400 px-1 font-medium">
+              <span>Batch uploading rows...</span>
+              {uploadProgress?.etaSeconds > 0 && (
+                <span className="text-slate-700 dark:text-slate-200">
+                  ⏱️ ~{uploadProgress.etaSeconds}s remaining
+                </span>
+              )}
+            </div>
           </div>
         </div>
       ) : (
@@ -1039,6 +1049,13 @@ export default function NumberLists() {
   const [viewList, setViewList] = useState(null);
   const [selectedIds, setSelectedIds] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({
+    active: false,
+    percent: 0,
+    currentCount: 0,
+    totalCount: 0,
+    etaSeconds: 0,
+  });
 
   useEffect(() => { loadLists(); }, []);
 
@@ -1059,18 +1076,98 @@ export default function NumberLists() {
   const filtered = lists.filter(l => l.name.toLowerCase().includes(search.toLowerCase()));
 
   const handleSave = async ({ name, numbers, tags, variables, contactData }) => {
+    const totalCount = Math.max(numbers?.length || 0, contactData?.length || 0);
+
+    // If small list (<= 3,000 items), single-shot save
+    if (totalCount <= 3000) {
+      try {
+        setSaving(true);
+        setUploadProgress({ active: true, percent: 50, currentCount: totalCount, totalCount, etaSeconds: 1 });
+        const data = await api.createNumberList({ name, numbers, tags, variables, contactData });
+        const limitErr = parseLimitError(data);
+        if (limitErr) { setShowCreate(false); setLimitError(limitErr); return; }
+        if (data.error) throw new Error(data.error);
+        setLists(p => [data.list, ...p]);
+        setShowCreate(false);
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setSaving(false);
+        setUploadProgress({ active: false, percent: 0, currentCount: 0, totalCount: 0, etaSeconds: 0 });
+      }
+      return;
+    }
+
+    // High-performance Chunked Batch Upload (> 3,000 items)
+    const BATCH_SIZE = 8000;
+    const numBatches = Math.ceil(totalCount / BATCH_SIZE);
+    setSaving(true);
+    setUploadProgress({
+      active: true,
+      percent: 2,
+      currentCount: 0,
+      totalCount,
+      etaSeconds: Math.ceil(numBatches * 1.5),
+    });
+
+    const startTime = Date.now();
+    let createdListId = null;
+    let latestListObj = null;
+
     try {
-      setSaving(true);
-      const data = await api.createNumberList({ name, numbers, tags, variables, contactData });
-      const limitErr = parseLimitError(data);
-      if (limitErr) { setShowCreate(false); setLimitError(limitErr); return; }
-      if (data.error) throw new Error(data.error);
-      setLists(p => [data.list, ...p]);
+      for (let b = 0; b < numBatches; b++) {
+        const startIdx = b * BATCH_SIZE;
+        const endIdx = Math.min(totalCount, startIdx + BATCH_SIZE);
+        const batchNum = numbers.slice(startIdx, endIdx);
+        const batchData = contactData ? contactData.slice(startIdx, endIdx) : [];
+
+        if (b === 0) {
+          const data = await api.createNumberList({
+            name,
+            numbers: batchNum,
+            tags,
+            variables,
+            contactData: batchData,
+          });
+          const limitErr = parseLimitError(data);
+          if (limitErr) { setShowCreate(false); setLimitError(limitErr); return; }
+          if (data.error) throw new Error(data.error);
+          createdListId = data.list.id;
+          latestListObj = data.list;
+        } else {
+          const res = await api.appendNumberListBatch(createdListId, batchNum, batchData);
+          if (res.success !== false && res.list) {
+            latestListObj = res.list;
+          }
+        }
+
+        const processed = endIdx;
+        const percent = Math.round((processed / totalCount) * 100);
+        const elapsedSec = (Date.now() - startTime) / 1000;
+        const speed = processed / (elapsedSec || 0.1);
+        const remainingItems = totalCount - processed;
+        const etaSeconds = Math.max(1, Math.ceil(remainingItems / speed));
+
+        setUploadProgress({
+          active: true,
+          percent,
+          currentCount: processed,
+          totalCount,
+          etaSeconds,
+        });
+      }
+
+      if (latestListObj) {
+        setLists(p => [latestListObj, ...p]);
+      } else {
+        loadLists();
+      }
       setShowCreate(false);
     } catch (err) {
-      setError(err.message);
+      setError(err.message || 'Failed to save number list');
     } finally {
       setSaving(false);
+      setUploadProgress({ active: false, percent: 0, currentCount: 0, totalCount: 0, etaSeconds: 0 });
     }
   };
 
@@ -1433,7 +1530,13 @@ export default function NumberLists() {
         </div>
       )}
 
-      <CreateListModal open={showCreate} onClose={() => setShowCreate(false)} onSave={handleSave} saving={saving} />
+      <CreateListModal
+        open={showCreate}
+        onClose={() => setShowCreate(false)}
+        onSave={handleSave}
+        saving={saving}
+        uploadProgress={uploadProgress}
+      />
       <MergeModal
         open={showMerge}
         onClose={() => { setShowMerge(false); setSelectedIds([]); }}

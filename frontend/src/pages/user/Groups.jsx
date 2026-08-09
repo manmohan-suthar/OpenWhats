@@ -407,12 +407,13 @@ export default function Groups() {
     setCreatingGroup(true);
     setMultiProgress({
       active: true,
-      current: 1,
+      current: 0,
       total: totalGroupsToCreate,
-      currentGroupName: "",
+      percent: 0,
+      currentGroupName: `${baseName}${formatGroupSuffix(0, suffixStyle)}`,
       processedContacts: 0,
       totalContacts: totalCount,
-      etaSeconds: Math.ceil(totalGroupsToCreate * 1.5),
+      etaSeconds: Math.ceil(totalGroupsToCreate * 2),
       successCount: 0,
       errorCount: 0,
     });
@@ -425,20 +426,10 @@ export default function Groups() {
       const maxBaseLength = 25 - suffix.length;
       const groupSubject = `${baseName.slice(0, maxBaseLength)}${suffix}`;
 
-      const completed = i;
-      const processedContacts = Math.min(totalCount, completed * chunkLimit);
-      const elapsedSec = (Date.now() - startTime) / 1000;
-      const avgTimePerGroup = completed > 0 ? elapsedSec / completed : 1.5;
-      const remainingGroups = totalGroupsToCreate - completed;
-      const etaSeconds = Math.max(1, Math.ceil(remainingGroups * avgTimePerGroup));
-
       setMultiProgress((prev) => ({
         ...prev,
         current: i + 1,
         currentGroupName: groupSubject,
-        processedContacts,
-        totalContacts: totalCount,
-        etaSeconds,
       }));
 
       try {
@@ -457,7 +448,27 @@ export default function Groups() {
         errorCount++;
       }
 
-      // Small delay between group creations to avoid rate limits
+      const completed = i + 1;
+      const processedContacts = Math.min(totalCount, completed * chunkLimit);
+      const elapsedSec = (Date.now() - startTime) / 1000;
+      const avgTimePerGroup = elapsedSec / completed;
+      const remainingGroups = totalGroupsToCreate - completed;
+      const etaSeconds = Math.max(0, Math.ceil(remainingGroups * avgTimePerGroup));
+      const percent = Math.round((completed / totalGroupsToCreate) * 100);
+
+      setMultiProgress({
+        active: true,
+        current: completed,
+        total: totalGroupsToCreate,
+        percent,
+        currentGroupName: groupSubject,
+        processedContacts,
+        totalContacts: totalCount,
+        etaSeconds,
+        successCount,
+        errorCount,
+      });
+
       if (i < chunks.length - 1) {
         await new Promise((resolve) => setTimeout(resolve, 1200));
       }
@@ -799,7 +810,7 @@ export default function Groups() {
             </div>
             <div>
               <h4 className="text-xl font-bold text-slate-900 dark:text-white">
-                {Math.round((multiProgress.current / multiProgress.total) * 100)}% Completed
+                {multiProgress.percent || 0}% Completed
               </h4>
               <p className="text-sm font-semibold text-primary-600 dark:text-primary-400 mt-1">
                 Creating Group {multiProgress.current} of {multiProgress.total}: "{multiProgress.currentGroupName}"
@@ -813,11 +824,11 @@ export default function Groups() {
 
             {/* Progress Bar */}
             <div className="space-y-2 max-w-md mx-auto">
-              <div className="w-full h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+              <div className="w-full h-3.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden p-0.5">
                 <div
                   className="h-full bg-gradient-to-r from-emerald-500 to-primary-600 transition-all duration-300 rounded-full"
                   style={{
-                    width: `${Math.max(5, Math.round((multiProgress.current / multiProgress.total) * 100))}%`,
+                    width: `${Math.max(5, multiProgress.percent || 0)}%`,
                   }}
                 />
               </div>
