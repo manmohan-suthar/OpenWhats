@@ -22,6 +22,9 @@ import {
   Square,
   ChevronRight,
   Settings,
+  ShieldCheck,
+  AlertTriangle,
+  Copy,
 } from "lucide-react";
 import PageHeader from "../../components/ui/PageHeader";
 import Modal from "../../components/ui/Modal";
@@ -112,16 +115,26 @@ export default function Groups() {
   const [creatingGroup, setCreatingGroup] = useState(false);
 
   // ── Advanced Auto Multi-Group Creation options ──────────────────────────────
+  const [creationMode, setCreationMode] = useState("invite"); // "invite" (safe) or "direct"
   const [autoSplit, setAutoSplit] = useState(true);
-  const [contactsPerGroup, setContactsPerGroup] = useState(950);
+  const [contactsPerGroup, setContactsPerGroup] = useState(250);
+  const [interGroupDelay, setInterGroupDelay] = useState(5); // seconds
   const [suffixStyle, setSuffixStyle] = useState("underscore_2");
+  const [rotateSessions, setRotateSessions] = useState(true);
+  const [groupsPerSession, setGroupsPerSession] = useState(5);
+  const [createdInviteResults, setCreatedInviteResults] = useState(null);
 
   // ── Multi-group progress tracking ─────────────────────────────────────────
   const [multiProgress, setMultiProgress] = useState({
     active: false,
     current: 0,
     total: 0,
+    percent: 0,
     currentGroupName: "",
+    currentSessionName: "",
+    processedContacts: 0,
+    totalContacts: 0,
+    etaSeconds: 0,
     successCount: 0,
     errorCount: 0,
   });
@@ -194,49 +207,6 @@ export default function Groups() {
       .slice(0, 300);
   }, [allParticipantNumbers, participantSearch]);
 
-  // Total groups calculation
-  const totalSelectedCount = selectedParticipants.size;
-  const chunkLimit = Math.max(10, Math.min(1000, Number(contactsPerGroup) || 950));
-  const estimatedGroupCount = autoSplit && totalSelectedCount > 0
-    ? Math.ceil(totalSelectedCount / chunkLimit)
-    : 1;
-
-  async function loadSessions() {
-    try {
-      setError("");
-      setLoadingSessions(true);
-      const data = await api.getSessions();
-      const connected = (Array.isArray(data.data) ? data.data : []).filter(
-        (session) => session.status === "connected",
-      );
-      setSessions(connected);
-      setSelectedSession((current) => current || connected[0]?.sessionId || "");
-    } catch (err) {
-      setError(err.message || "Failed to load sessions");
-    } finally {
-      setLoadingSessions(false);
-    }
-  }
-
-  async function loadGroups(sessionId = selectedSession) {
-    if (!sessionId) return;
-
-    try {
-      setError("");
-      setLoadingGroups(true);
-      const data = await api.getSessionGroups(sessionId);
-      if (data.success === false) {
-        throw new Error(data.error || "Failed to load groups");
-      }
-      setGroups(Array.isArray(data.data) ? data.data : []);
-    } catch (err) {
-      setGroups([]);
-      setError(err.message || "Failed to load groups");
-    } finally {
-      setLoadingGroups(false);
-    }
-  }
-
   async function handleImport(group) {
     if (!selectedSession || !group?.jid) return;
 
@@ -253,13 +223,14 @@ export default function Groups() {
       }
       setToast({
         type: "success",
-        text: `Imported ${result.list?.count || 0} phone numbers`,
+        text: `Imported ${result.data?.added || 0} participants to number list!`,
       });
+      setTimeout(() => setToast(null), 4000);
     } catch (err) {
       setToast({ type: "error", text: err.message || "Import failed" });
+      setTimeout(() => setToast(null), 4000);
     } finally {
       setImportingGroup("");
-      setTimeout(() => setToast(null), 3000);
     }
   }
 
@@ -267,14 +238,15 @@ export default function Groups() {
     if (!selectedSession || !downloadGroup?.jid) return;
 
     try {
-      setError("");
       setDownloadingFormat(format);
-      const result = await api.downloadGroupParticipants(
+      await api.downloadGroupParticipants(
         selectedSession,
         downloadGroup.jid,
         format,
+        downloadGroup.subject || downloadGroup.name || "Group",
       );
-      downloadBlob(result.blob, result.filename);
+      setToast({ type: "success", text: `Downloaded contacts in ${format.toUpperCase()}!` });
+      setTimeout(() => setToast(null), 3000);
       setDownloadGroup(null);
     } catch (err) {
       setToast({ type: "error", text: err.message || "Download failed" });
@@ -292,10 +264,12 @@ export default function Groups() {
     setSelectedListIds([]);
     setSelectedParticipants(new Set());
     setParticipantSearch("");
+    setCreationMode("invite");
     setAutoSplit(true);
-    setContactsPerGroup(950);
+    setContactsPerGroup(250);
+    setInterGroupDelay(5);
     setSuffixStyle("underscore_2");
-    setMultiProgress({ active: false, current: 0, total: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
+    setMultiProgress({ active: false, current: 0, total: 0, percent: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
     setNumberLists([]);
     loadNumberLists();
   }
@@ -307,7 +281,16 @@ export default function Groups() {
     setSelectedListIds([]);
     setSelectedParticipants(new Set());
     setParticipantSearch("");
-    setMultiProgress({ active: false, current: 0, total: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
+    setMultiProgress({ active: false, current: 0, total: 0, percent: 0, currentGroupName: "", successCount: 0, errorCount: 0 });
+  }
+
+  function selectLimitParticipants(limit) {
+    if (limit <= 0) {
+      setSelectedParticipants(new Set());
+    } else {
+      const sliced = allParticipantNumbers.slice(0, limit);
+      setSelectedParticipants(new Set(sliced));
+    }
   }
 
   async function loadNumberLists() {
@@ -323,87 +306,37 @@ export default function Groups() {
     }
   }
 
-  function toggleListSelection(listId) {
-    setSelectedListIds((prev) =>
-      prev.includes(listId)
-        ? prev.filter((id) => id !== listId)
-        : [...prev, listId],
-    );
-  }
-
-  function toggleParticipant(number) {
-    setSelectedParticipants((prev) => {
-      const next = new Set(prev);
-      if (next.has(number)) {
-        next.delete(number);
-      } else {
-        next.add(number);
-      }
-      return next;
-    });
-  }
-
-  function selectAllParticipants() {
-    if (selectedParticipants.size === allParticipantNumbers.length) {
-      setSelectedParticipants(new Set());
-    } else {
-      setSelectedParticipants(new Set(allParticipantNumbers));
-    }
-  }
-
   async function handleCreateGroup() {
     const baseName = createGroupName.trim();
     if (!createSession || !baseName || selectedParticipants.size === 0) return;
 
     const participantsArray = [...selectedParticipants];
     const totalCount = participantsArray.length;
+    const chunkLimit = autoSplit ? contactsPerGroup : Math.min(1000, totalCount);
 
-    // Single Group creation (without auto-split)
-    if (!autoSplit || totalCount <= chunkLimit) {
-      if (totalCount > 1000) {
-        setToast({ type: "error", text: "Single group cannot exceed 1000 contacts. Enable Auto-Split to create multiple groups." });
-        setTimeout(() => setToast(null), 4000);
-        return;
-      }
+    const isInviteMode = creationMode === "invite";
 
-      try {
-        setCreatingGroup(true);
-        const result = await api.createWhatsAppGroup(
-          createSession,
-          baseName.slice(0, 25),
-          participantsArray,
-        );
-
-        if (result.success === false) {
-          throw new Error(result.error || "Failed to create group");
-        }
-
-        setToast({
-          type: "success",
-          text: `Group "${baseName}" created with ${totalCount} participants!`,
-        });
-        closeCreateModal();
-
-        if (createSession === selectedSession) {
-          setTimeout(() => loadGroups(), 1500);
-        }
-      } catch (err) {
-        setToast({ type: "error", text: err.message || "Failed to create group" });
-        setTimeout(() => setToast(null), 4000);
-      } finally {
-        setCreatingGroup(false);
-      }
-      return;
-    }
-
-    // ── Multi-Group Sequential Creation ──────────────────────────────────────
+    // ── Group Sequential Creation ──────────────────────────────────────
     const chunks = [];
     for (let i = 0; i < totalCount; i += chunkLimit) {
       chunks.push(participantsArray.slice(i, i + chunkLimit));
     }
 
-    const totalGroupsToCreate = chunks.length;
+    const totalGroupsToCreate = Math.max(1, chunks.length);
     const startTime = Date.now();
+    const generatedLinks = [];
+
+    // Determine available sessions for rotation
+    const connectedSessions = sessions.filter((s) => s.status === "connected");
+    const activeSessions = rotateSessions && connectedSessions.length > 1
+      ? connectedSessions
+      : sessions.filter((s) => s.sessionId === createSession);
+
+    if (activeSessions.length === 0) {
+      setToast({ type: "error", text: "No active connected session available!" });
+      return;
+    }
+
     setCreatingGroup(true);
     setMultiProgress({
       active: true,
@@ -411,9 +344,10 @@ export default function Groups() {
       total: totalGroupsToCreate,
       percent: 0,
       currentGroupName: `${baseName}${formatGroupSuffix(0, suffixStyle)}`,
+      currentSessionName: activeSessions[0]?.name || activeSessions[0]?.phoneNumber || "Session 1",
       processedContacts: 0,
       totalContacts: totalCount,
-      etaSeconds: Math.ceil(totalGroupsToCreate * 2),
+      etaSeconds: Math.ceil(totalGroupsToCreate * (interGroupDelay + 2)),
       successCount: 0,
       errorCount: 0,
     });
@@ -426,25 +360,48 @@ export default function Groups() {
       const maxBaseLength = 25 - suffix.length;
       const groupSubject = `${baseName.slice(0, maxBaseLength)}${suffix}`;
 
+      // Calculate which session to use (Session Rotation)
+      let targetSession = activeSessions[0];
+      if (rotateSessions && activeSessions.length > 1) {
+        const sessionIndex = Math.floor(i / groupsPerSession) % activeSessions.length;
+        targetSession = activeSessions[sessionIndex];
+      }
+
+      const targetSessionId = targetSession.sessionId;
+      const targetSessionName = targetSession.name || targetSession.phoneNumber || targetSessionId;
+
       setMultiProgress((prev) => ({
         ...prev,
         current: i + 1,
         currentGroupName: groupSubject,
+        currentSessionName: targetSessionName,
       }));
 
       try {
         const res = await api.createWhatsAppGroup(
-          createSession,
+          targetSessionId,
           groupSubject,
-          chunks[i],
+          isInviteMode ? [] : chunks[i],
+          creationMode,
         );
-        if (res.success !== false) {
+
+        if (res.success !== false && res.data) {
           successCount++;
+          if (res.data.inviteUrl) {
+            generatedLinks.push({
+              subject: res.data.subject || groupSubject,
+              inviteUrl: res.data.inviteUrl,
+              inviteCode: res.data.inviteCode,
+              groupJid: res.data.groupJid,
+              targetCount: chunks[i]?.length || 0,
+              sessionName: targetSessionName,
+            });
+          }
         } else {
           errorCount++;
         }
       } catch (err) {
-        console.error(`Error creating group ${groupSubject}:`, err);
+        console.error(`Error creating group ${groupSubject} with session ${targetSessionName}:`, err);
         errorCount++;
       }
 
@@ -453,7 +410,7 @@ export default function Groups() {
       const elapsedSec = (Date.now() - startTime) / 1000;
       const avgTimePerGroup = elapsedSec / completed;
       const remainingGroups = totalGroupsToCreate - completed;
-      const etaSeconds = Math.max(0, Math.ceil(remainingGroups * avgTimePerGroup));
+      const etaSeconds = Math.max(0, Math.ceil(remainingGroups * (avgTimePerGroup + interGroupDelay)));
       const percent = Math.round((completed / totalGroupsToCreate) * 100);
 
       setMultiProgress({
@@ -462,6 +419,7 @@ export default function Groups() {
         total: totalGroupsToCreate,
         percent,
         currentGroupName: groupSubject,
+        currentSessionName: targetSessionName,
         processedContacts,
         totalContacts: totalCount,
         etaSeconds,
@@ -470,7 +428,7 @@ export default function Groups() {
       });
 
       if (i < chunks.length - 1) {
-        await new Promise((resolve) => setTimeout(resolve, 1200));
+        await new Promise((resolve) => setTimeout(resolve, interGroupDelay * 1000));
       }
     }
 
@@ -820,6 +778,11 @@ export default function Groups() {
                   {(multiProgress.processedContacts || 0).toLocaleString()} of {multiProgress.totalContacts.toLocaleString()} contacts added
                 </p>
               )}
+              {multiProgress.currentSessionName && (
+                <p className="text-xs font-semibold text-blue-600 dark:text-blue-400 mt-1">
+                  Session: {multiProgress.currentSessionName}
+                </p>
+              )}
             </div>
 
             {/* Progress Bar */}
@@ -860,6 +823,57 @@ export default function Groups() {
               <p className="text-[11px] text-slate-400 mt-1">
                 {createGroupName.length}/25 characters
               </p>
+            </div>
+
+            {/* Creation Mode Selection (Anti-Ban Controls) */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wider">
+                Group Creation Mode & Anti-Ban Protection <span className="text-red-400">*</span>
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => setCreationMode("invite")}
+                  className={`p-3.5 rounded-xl border text-left transition-all relative ${
+                    creationMode === "invite"
+                      ? "border-emerald-500 bg-emerald-50/60 dark:bg-emerald-900/20 ring-2 ring-emerald-400 dark:ring-emerald-800"
+                      : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <ShieldCheck size={16} className="text-emerald-600" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Invite Link Mode (Safe & Anti-Ban)
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 ml-auto">
+                      SAFE
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Generates Join Invite Links (`chat.whatsapp.com`). Users join voluntarily — Zero risk of spam reports or account bans!
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setCreationMode("direct")}
+                  className={`p-3.5 rounded-xl border text-left transition-all relative ${
+                    creationMode === "direct"
+                      ? "border-amber-500 bg-amber-50/60 dark:bg-amber-900/20 ring-2 ring-amber-400 dark:ring-amber-800"
+                      : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <AlertTriangle size={16} className="text-amber-600" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Direct Add Mode (Caution)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Forcibly adds numbers directly into groups. High risk of spam blocks if numbers are unsaved!
+                  </p>
+                </button>
+              </div>
             </div>
 
             {/* Session Selector */}
@@ -952,7 +966,7 @@ export default function Groups() {
                   <div className="flex items-center gap-2">
                     <Layers size={16} className="text-primary-600" />
                     <span className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
-                      Auto-Split Into Multiple Groups
+                      Auto-Split & Anti-Ban Controls
                     </span>
                   </div>
                   <label className="relative inline-flex items-center cursor-pointer">
@@ -968,20 +982,41 @@ export default function Groups() {
 
                 {autoSplit ? (
                   <div className="space-y-3 pt-1">
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-500 mb-1">
-                          Contacts Per Group (Max 1000)
+                          Contacts Per Group
                         </label>
-                        <input
-                          type="number"
-                          min={10}
-                          max={1000}
+                        <select
                           value={contactsPerGroup}
-                          onChange={(e) => setContactsPerGroup(Math.min(1000, Math.max(10, Number(e.target.value) || 950)))}
+                          onChange={(e) => setContactsPerGroup(Number(e.target.value))}
                           className="input text-xs"
-                        />
+                        >
+                          <option value={50}>50 contacts (Safest)</option>
+                          <option value={100}>100 contacts</option>
+                          <option value={250}>250 contacts (Recommended)</option>
+                          <option value={500}>500 contacts</option>
+                          <option value={950}>950 contacts (Max limit)</option>
+                        </select>
                       </div>
+
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">
+                          Delay Between Groups
+                        </label>
+                        <select
+                          value={interGroupDelay}
+                          onChange={(e) => setInterGroupDelay(Number(e.target.value))}
+                          className="input text-xs"
+                        >
+                          <option value={3}>3 Seconds (Fast)</option>
+                          <option value={5}>5 Seconds (Balanced)</option>
+                          <option value={10}>10 Seconds (Safe)</option>
+                          <option value={15}>15 Seconds (Extra Safe)</option>
+                          <option value={30}>30 Seconds (Ultra Protection)</option>
+                        </select>
+                      </div>
+
                       <div>
                         <label className="block text-[11px] font-semibold text-slate-500 mb-1">
                           Group Naming Format
@@ -1019,21 +1054,126 @@ export default function Groups() {
               </div>
             )}
 
+            {/* Multi-Session Load Balancing & Rotation */}
+            {sessions.filter((s) => s.status === "connected").length > 1 && (
+              <div className="p-4 rounded-xl border border-blue-200 dark:border-blue-800/50 bg-blue-50/40 dark:bg-blue-900/10 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw size={16} className="text-blue-600" />
+                    <span className="text-xs font-bold text-slate-900 dark:text-white uppercase tracking-wider">
+                      Multi-Session Load Balancing & Rotation
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300">
+                      {sessions.filter((s) => s.status === "connected").length} SESSIONS ACTIVE
+                    </span>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={rotateSessions}
+                      onChange={(e) => setRotateSessions(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+                  </label>
+                </div>
+
+                {rotateSessions ? (
+                  <div className="space-y-2 text-xs">
+                    <div className="flex items-center gap-3">
+                      <span className="text-slate-600 dark:text-slate-400">Switch WhatsApp session every:</span>
+                      <select
+                        value={groupsPerSession}
+                        onChange={(e) => setGroupsPerSession(Number(e.target.value))}
+                        className="input text-xs w-36 py-1"
+                      >
+                        <option value={1}>1 Group</option>
+                        <option value={3}>3 Groups</option>
+                        <option value={5}>5 Groups (Recommended)</option>
+                        <option value={10}>10 Groups</option>
+                      </select>
+                    </div>
+                    <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                      🛡️ Automatically rotates between {sessions.filter((s) => s.status === "connected").length} connected WhatsApp sessions! Distributes creation load evenly across your accounts to prevent number bans.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    Session rotation is OFF. All groups will be created using 1 single WhatsApp session.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Participant Picker */}
             {selectedListIds.length > 0 && (
               <div>
-                <div className="flex items-center justify-between mb-1.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
                   <label className="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
                     Select Participants ({selectedParticipants.size.toLocaleString()}/{allParticipantNumbers.length.toLocaleString()})
                   </label>
-                  <button
-                    onClick={selectAllParticipants}
-                    className="text-[11px] font-semibold text-primary-600 dark:text-primary-400 hover:text-primary-700 dark:hover:text-primary-300 transition-colors"
-                  >
-                    {selectedParticipants.size === allParticipantNumbers.length && allParticipantNumbers.length > 0
-                      ? "Deselect All"
-                      : "Select All"}
-                  </button>
+
+                  {/* 1-Click Quick Limit Selection Buttons */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] text-slate-400 font-medium mr-1">Quick Select:</span>
+                    {allParticipantNumbers.length >= 1000 && (
+                      <button
+                        type="button"
+                        onClick={() => selectLimitParticipants(1000)}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
+                          selectedParticipants.size === 1000
+                            ? "bg-primary-600 text-white"
+                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                        }`}
+                      >
+                        First 1K
+                      </button>
+                    )}
+                    {allParticipantNumbers.length >= 2500 && (
+                      <button
+                        type="button"
+                        onClick={() => selectLimitParticipants(2500)}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
+                          selectedParticipants.size === 2500
+                            ? "bg-primary-600 text-white"
+                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                        }`}
+                      >
+                        First 2.5K
+                      </button>
+                    )}
+                    {allParticipantNumbers.length >= 5000 && (
+                      <button
+                        type="button"
+                        onClick={() => selectLimitParticipants(5000)}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
+                          selectedParticipants.size === 5000
+                            ? "bg-primary-600 text-white"
+                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                        }`}
+                      >
+                        First 5K
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => selectLimitParticipants(allParticipantNumbers.length)}
+                      className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
+                        selectedParticipants.size === allParticipantNumbers.length
+                          ? "bg-primary-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                      }`}
+                    >
+                      All ({allParticipantNumbers.length.toLocaleString()})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectLimitParticipants(0)}
+                      className="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-300 hover:bg-red-100"
+                    >
+                      Clear
+                    </button>
+                  </div>
                 </div>
 
                 {/* Participant Search */}
@@ -1095,6 +1235,99 @@ export default function Groups() {
             )}
           </div>
         )}
+      {/* ── Generated Group Invite Links Result Modal ───────────────── */}
+      <Modal
+        open={!!createdInviteResults}
+        onClose={() => setCreatedInviteResults(null)}
+        title="Created Group Invite Links (Anti-Ban Safe)"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={18} className="text-emerald-600" />
+              <div>
+                <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                  {createdInviteResults?.links?.length} Groups Created Safely!
+                </p>
+                <p className="text-[11px] text-emerald-700/80 dark:text-emerald-400">
+                  Copy or download these invite links to invite {createdInviteResults?.totalCount?.toLocaleString()} contacts with 0% ban risk.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const allLinksText = createdInviteResults?.links
+                    ?.map((l) => `${l.subject}: ${l.inviteUrl}`)
+                    .join("\n");
+                  navigator.clipboard.writeText(allLinksText);
+                  setToast({ type: "success", text: "Copied all invite links to clipboard!" });
+                  setTimeout(() => setToast(null), 3000);
+                }}
+                className="btn-secondary btn-sm gap-1 text-xs"
+              >
+                <Copy size={12} /> Copy All Links
+              </button>
+              <button
+                onClick={() => {
+                  const csvContent =
+                    "Group Name,Invite Link,Group JID,Target Contacts\n" +
+                    createdInviteResults?.links
+                      ?.map((l) => `"${l.subject}","${l.inviteUrl}","${l.groupJid}","${l.targetCount}"`)
+                      .join("\n");
+                  const blob = new Blob([csvContent], { type: "text/csv" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `group_invite_links_${Date.now()}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="btn-primary btn-sm gap-1 text-xs"
+              >
+                <Download size={12} /> Export CSV
+              </button>
+            </div>
+          </div>
+
+          <div className="max-h-72 overflow-y-auto rounded-xl border border-slate-200 dark:border-slate-700">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 dark:bg-slate-800 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-2">Group Name</th>
+                  <th className="text-left px-3 py-2">Invite Link</th>
+                  <th className="text-right px-3 py-2">Action</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {createdInviteResults?.links?.map((l, i) => (
+                  <tr key={i} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                    <td className="px-3 py-2.5 font-semibold text-slate-800 dark:text-slate-200">
+                      {l.subject}
+                    </td>
+                    <td className="px-3 py-2.5 font-mono text-primary-600 dark:text-primary-400 select-all">
+                      {l.inviteUrl}
+                    </td>
+                    <td className="px-3 py-2.5 text-right">
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(l.inviteUrl);
+                          setToast({ type: "success", text: `Copied link for ${l.subject}` });
+                          setTimeout(() => setToast(null), 2500);
+                        }}
+                        className="btn-ghost btn-sm p-1.5 text-xs gap-1"
+                      >
+                        <Copy size={12} /> Copy
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
       </Modal>
 
       {toast && (

@@ -716,9 +716,10 @@ class WhatsAppService {
    * @param {string} sessionId - The session to create the group from
    * @param {string} subject - Group name / subject (max 25 chars enforced by WA)
    * @param {string[]} participants - Array of phone numbers (e.g. "+919876543210")
-   * @returns {{ groupJid: string, subject: string, participants: object[] }}
+   * @param {string} mode - "direct" to add participants immediately, "invite" to create empty group & generate invite link
+   * @returns {{ groupJid: string, subject: string, inviteCode: string, inviteUrl: string, participants: object[] }}
    */
-  async createGroup(sessionId, subject, participants) {
+  async createGroup(sessionId, subject, participants = [], mode = "direct") {
     const sock = this.sockets.get(sessionId);
 
     if (!sock?.user?.id) {
@@ -738,27 +739,47 @@ class WhatsAppService {
     }
 
     // Convert phone numbers to WhatsApp JIDs
-    const participantJids = participants.map((num) => {
+    const participantJids = (participants || []).map((num) => {
       const digits = String(num).replace(/\D/g, "");
       return `${digits}@s.whatsapp.net`;
     });
 
     try {
-      const result = await sock.groupCreate(subject, participantJids);
+      // In invite link mode, create empty group to avoid forcing unsaved contacts & triggering WA spam algorithms
+      const jidsToAdd = mode === "invite" ? [] : participantJids;
+      const result = await sock.groupCreate(subject, jidsToAdd);
+      const groupJid = result?.id || result?.gid || null;
+
+      let inviteCode = null;
+      let inviteUrl = null;
+
+      if (groupJid && typeof sock.groupInviteCode === "function") {
+        try {
+          inviteCode = await sock.groupInviteCode(groupJid);
+          if (inviteCode) {
+            inviteUrl = `https://chat.whatsapp.com/${inviteCode}`;
+          }
+        } catch (e) {
+          console.warn("[WA GROUP CREATE] Failed to fetch invite code:", e?.message);
+        }
+      }
 
       return {
-        groupJid: result?.id || result?.gid || null,
+        groupJid,
         subject: result?.subject || subject,
+        inviteCode,
+        inviteUrl,
         participants: Array.isArray(result?.participants)
           ? result.participants
-          : participantJids.map((jid) => ({ id: jid, admin: null })),
-        size: participantJids.length + 1, // +1 for creator
+          : jidsToAdd.map((jid) => ({ id: jid, admin: null })),
+        size: jidsToAdd.length + 1, // +1 for creator
       };
     } catch (error) {
       console.error("[WA GROUP CREATE] Error:", {
         sessionId,
         subject,
         participantCount: participants.length,
+        mode,
         error: error?.message || String(error),
       });
 

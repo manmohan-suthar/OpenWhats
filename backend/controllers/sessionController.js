@@ -1012,7 +1012,7 @@ export const logoutSession = async (req, res) => {
 export const createGroupFromNumbers = async (req, res) => {
   try {
     const { id } = req.params;
-    const { subject, participants } = req.body || {};
+    const { subject, participants, mode } = req.body || {};
 
     // Validate subject
     const trimmedSubject = String(subject || "").trim();
@@ -1024,16 +1024,19 @@ export const createGroupFromNumbers = async (req, res) => {
       });
     }
 
+    const groupMode = mode === "invite" ? "invite" : "direct";
+
     // Validate participants
-    if (!Array.isArray(participants) || participants.length === 0) {
+    const partsArray = Array.isArray(participants) ? participants : [];
+    if (groupMode === "direct" && partsArray.length === 0) {
       return res.status(400).json({
         success: false,
         code: "INVALID_PARTICIPANTS",
-        error: "At least 1 participant phone number is required",
+        error: "At least 1 participant phone number is required in direct add mode",
       });
     }
 
-    if (participants.length > 1000) {
+    if (partsArray.length > 1000) {
       return res.status(400).json({
         success: false,
         code: "TOO_MANY_PARTICIPANTS",
@@ -1042,7 +1045,7 @@ export const createGroupFromNumbers = async (req, res) => {
     }
 
     // Validate each participant number
-    const cleanedParticipants = participants.map((p) => {
+    const cleanedParticipants = partsArray.map((p) => {
       const digits = String(p || "").replace(/\D/g, "");
       if (digits.length < 7 || digits.length > 15) {
         const err = new Error(
@@ -1074,6 +1077,7 @@ export const createGroupFromNumbers = async (req, res) => {
       id,
       trimmedSubject,
       cleanedParticipants,
+      groupMode,
     );
 
     return res.status(201).json({

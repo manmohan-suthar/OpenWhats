@@ -525,6 +525,14 @@ export const api = {
     });
     return parseResponse(res);
   },
+  async createWhatsAppGroup(sessionId, subject, participants = [], mode = "direct") {
+    const res = await fetch(`${API_URL}/sessions/${sessionId}/groups/create`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ subject, participants, mode }),
+    });
+    return parseResponse(res);
+  },
 };
 
 export default api;
