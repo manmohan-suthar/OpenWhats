@@ -1235,6 +1235,8 @@ export default function Groups() {
             )}
           </div>
         )}
+      </Modal>
+
       {/* ── Generated Group Invite Links Result Modal ───────────────── */}
       <Modal
         open={!!createdInviteResults}
