@@ -11,6 +11,44 @@ function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+/**
+ * Partner-managed users are service identities, not human OpenWhats users.
+ * Deriving their email from the partner and external company id prevents the
+ * same DeskGo admin email from accidentally binding two companies to one
+ * OpenWhats user. Existing tenants are still resolved by their tenant mapping
+ * and are therefore left untouched.
+ */
+export function deriveManagedAccountEmail(
+  partner,
+  externalCompanyId,
+  configuredDomain = process.env.PARTNER_MANAGED_ACCOUNT_EMAIL_DOMAIN ||
+    "deskgo.in",
+) {
+  const normalizedPartner = String(partner || "partner")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "partner";
+  const domain = String(configuredDomain || "")
+    .trim()
+    .toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domain)) {
+    const error = new Error(
+      "PARTNER_MANAGED_ACCOUNT_EMAIL_DOMAIN must be a valid domain",
+    );
+    error.statusCode = 503;
+    error.code = "PARTNER_PROVISIONING_NOT_CONFIGURED";
+    throw error;
+  }
+  const identity = crypto
+    .createHash("sha256")
+    .update(`${partner}:${externalCompanyId}`)
+    .digest("hex")
+    .slice(0, 32);
+  return `managed-${normalizedPartner}-${identity}@${domain}`;
+}
+
 export function deriveRawKey(
   partner,
   externalCompanyId,
@@ -51,6 +89,10 @@ class PartnerProvisioningService {
     ).trim();
     const companyName = String(payload.companyName || "").trim();
     const ownerEmail = normalizeEmail(payload.ownerEmail || payload.email);
+    const managedAccountEmail = deriveManagedAccountEmail(
+      partner,
+      externalCompanyId,
+    );
     const credentialVersion = Math.max(
       1,
       Number.parseInt(payload.credentialVersion || 1, 10) || 1,
@@ -83,15 +125,7 @@ class PartnerProvisioningService {
     let user = tenant ? await User.findById(tenant.userId) : null;
 
     if (!user) {
-      user = await User.findOne({ email: ownerEmail });
-      if (user && !user.managedByPartner) {
-        const error = new Error(
-          "This email already belongs to a regular OpenWhats account",
-        );
-        error.statusCode = 409;
-        error.code = "OPENWHATS_EMAIL_ALREADY_REGISTERED";
-        throw error;
-      }
+      user = await User.findOne({ email: managedAccountEmail });
       if (
         user &&
         (user.partner !== partner ||
@@ -110,7 +144,7 @@ class PartnerProvisioningService {
     if (!user) {
       try {
         user = await User.create({
-          email: ownerEmail,
+          email: managedAccountEmail,
           name: companyName,
           authProvider: "partner",
           managedByPartner: true,
@@ -121,7 +155,7 @@ class PartnerProvisioningService {
         createdUser = true;
       } catch (error) {
         if (error?.code !== 11000) throw error;
-        user = await User.findOne({ email: ownerEmail });
+        user = await User.findOne({ email: managedAccountEmail });
         if (
           !user?.managedByPartner ||
           user.partner !== partner ||

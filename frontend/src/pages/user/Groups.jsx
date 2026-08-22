@@ -190,6 +190,13 @@ export default function Groups() {
     return [...nums];
   }, [numberLists, selectedListIds]);
 
+  // Total estimated group count calculation
+  const totalSelectedCount = selectedParticipants.size;
+  const chunkLimit = Math.max(10, Math.min(1000, Number(contactsPerGroup) || 250));
+  const estimatedGroupCount = autoSplit && totalSelectedCount > 0
+    ? Math.ceil(totalSelectedCount / chunkLimit)
+    : 1;
+
   // When number lists change, default select all numbers automatically
   useEffect(() => {
     if (selectedListIds.length > 0) {
@@ -206,6 +213,74 @@ export default function Groups() {
       .filter((num) => num.toLowerCase().includes(q))
       .slice(0, 300);
   }, [allParticipantNumbers, participantSearch]);
+
+  // ── Core data loading functions ───────────────────────────────────────────
+  async function loadSessions() {
+    try {
+      setLoadingSessions(true);
+      setError("");
+      const data = await api.getSessions();
+      const list = Array.isArray(data.data) ? data.data : [];
+      setSessions(list);
+      const connected = list.find((s) => s.status === "connected");
+      if (connected) {
+        setSelectedSession(connected.sessionId);
+      } else if (list.length > 0) {
+        setSelectedSession(list[0].sessionId);
+      }
+    } catch (err) {
+      setError(err.message || "Failed to load WhatsApp sessions");
+    } finally {
+      setLoadingSessions(false);
+    }
+  }
+
+  async function loadGroups(sessionId = selectedSession) {
+    if (!sessionId) return;
+    try {
+      setLoadingGroups(true);
+      setError("");
+      const data = await api.getSessionGroups(sessionId);
+      if (data.success === false) {
+        throw new Error(data.error || "Failed to load groups");
+      }
+      setGroups(Array.isArray(data.data) ? data.data : []);
+    } catch (err) {
+      setGroups([]);
+      setError(err.message || "Failed to load groups");
+    } finally {
+      setLoadingGroups(false);
+    }
+  }
+
+  // ── List & Participant selection helpers ───────────────────────────────────
+  function toggleListSelection(listId) {
+    setSelectedListIds((prev) =>
+      prev.includes(listId)
+        ? prev.filter((id) => id !== listId)
+        : [...prev, listId],
+    );
+  }
+
+  function toggleParticipant(number) {
+    setSelectedParticipants((prev) => {
+      const next = new Set(prev);
+      if (next.has(number)) {
+        next.delete(number);
+      } else {
+        next.add(number);
+      }
+      return next;
+    });
+  }
+
+  function selectAllParticipants() {
+    if (selectedParticipants.size === allParticipantNumbers.length) {
+      setSelectedParticipants(new Set());
+    } else {
+      setSelectedParticipants(new Set(allParticipantNumbers));
+    }
+  }
 
   async function handleImport(group) {
     if (!selectedSession || !group?.jid) return;
@@ -695,25 +770,25 @@ export default function Groups() {
           <div className="grid grid-cols-3 gap-3">
             {FORMAT_OPTIONS.map(
               ({ id, label, icon: Icon, iconClass, hoverClass }) => (
-              <button
-                key={id}
-                onClick={() => handleDownload(id)}
-                disabled={!!downloadingFormat}
-                className={`p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-center transition-all disabled:opacity-50 disabled:cursor-not-allowed ${hoverClass}`}
-              >
-                <div
-                  className={`w-10 h-10 rounded-lg mx-auto flex items-center justify-center mb-2 ${iconClass}`}
+                <button
+                  key={id}
+                  onClick={() => handleDownload(id)}
+                  disabled={!!downloadingFormat}
+                  className={`p-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-center transition-all disabled:opacity-50 disabled:cursor-not-allowed ${hoverClass}`}
                 >
-                  {downloadingFormat === id ? (
-                    <Loader size={17} className="animate-spin" />
+                  <div
+                    className={`w-10 h-10 rounded-lg mx-auto flex items-center justify-center mb-2 ${iconClass}`}
+                  >
+                    {downloadingFormat === id ? (
+                      <Loader size={17} className="animate-spin" />
                     ) : (
-                    <Icon size={17} />
+                      <Icon size={17} />
                     )}
-                </div>
-                <p className="text-sm font-semibold text-slate-900 dark:text-white">
-                  {label}
-                </p>
-              </button>
+                  </div>
+                  <p className="text-sm font-semibold text-slate-900 dark:text-white">
+                    {label}
+                  </p>
+                </button>
               ),
             )}
           </div>
@@ -753,8 +828,8 @@ export default function Groups() {
                 {creatingGroup
                   ? "Processing..."
                   : estimatedGroupCount > 1
-                  ? `Create ${estimatedGroupCount} Groups (${selectedParticipants.size.toLocaleString()} Contacts)`
-                  : `Create Group (${selectedParticipants.size.toLocaleString()})`}
+                    ? `Create ${estimatedGroupCount} Groups (${selectedParticipants.size.toLocaleString()} Contacts)`
+                    : `Create Group (${selectedParticipants.size.toLocaleString()})`}
               </button>
             </>
           )
@@ -834,11 +909,10 @@ export default function Groups() {
                 <button
                   type="button"
                   onClick={() => setCreationMode("invite")}
-                  className={`p-3.5 rounded-xl border text-left transition-all relative ${
-                    creationMode === "invite"
-                      ? "border-emerald-500 bg-emerald-50/60 dark:bg-emerald-900/20 ring-2 ring-emerald-400 dark:ring-emerald-800"
-                      : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
-                  }`}
+                  className={`p-3.5 rounded-xl border text-left transition-all relative ${creationMode === "invite"
+                    ? "border-emerald-500 bg-emerald-50/60 dark:bg-emerald-900/20 ring-2 ring-emerald-400 dark:ring-emerald-800"
+                    : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
+                    }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <ShieldCheck size={16} className="text-emerald-600" />
@@ -857,11 +931,10 @@ export default function Groups() {
                 <button
                   type="button"
                   onClick={() => setCreationMode("direct")}
-                  className={`p-3.5 rounded-xl border text-left transition-all relative ${
-                    creationMode === "direct"
-                      ? "border-amber-500 bg-amber-50/60 dark:bg-amber-900/20 ring-2 ring-amber-400 dark:ring-amber-800"
-                      : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
-                  }`}
+                  className={`p-3.5 rounded-xl border text-left transition-all relative ${creationMode === "direct"
+                    ? "border-amber-500 bg-amber-50/60 dark:bg-amber-900/20 ring-2 ring-amber-400 dark:ring-amber-800"
+                    : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300"
+                    }`}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <AlertTriangle size={16} className="text-amber-600" />
@@ -929,18 +1002,16 @@ export default function Groups() {
                       <button
                         key={list.id}
                         onClick={() => toggleListSelection(list.id)}
-                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${
-                          isSelected
-                            ? "border-primary-300 bg-primary-50/60 dark:border-primary-700 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-800"
-                            : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
-                        }`}
+                        className={`flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-all ${isSelected
+                          ? "border-primary-300 bg-primary-50/60 dark:border-primary-700 dark:bg-primary-900/20 ring-1 ring-primary-200 dark:ring-primary-800"
+                          : "border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-600"
+                          }`}
                       >
                         <div
-                          className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all ${
-                            isSelected
-                              ? "bg-primary-500 text-white"
-                              : "border border-slate-300 dark:border-slate-600"
-                          }`}
+                          className={`w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 transition-all ${isSelected
+                            ? "bg-primary-500 text-white"
+                            : "border border-slate-300 dark:border-slate-600"
+                            }`}
                         >
                           {isSelected && <Check size={12} strokeWidth={3} />}
                         </div>
@@ -1120,11 +1191,10 @@ export default function Groups() {
                       <button
                         type="button"
                         onClick={() => selectLimitParticipants(1000)}
-                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
-                          selectedParticipants.size === 1000
-                            ? "bg-primary-600 text-white"
-                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
-                        }`}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${selectedParticipants.size === 1000
+                          ? "bg-primary-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                          }`}
                       >
                         First 1K
                       </button>
@@ -1133,11 +1203,10 @@ export default function Groups() {
                       <button
                         type="button"
                         onClick={() => selectLimitParticipants(2500)}
-                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
-                          selectedParticipants.size === 2500
-                            ? "bg-primary-600 text-white"
-                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
-                        }`}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${selectedParticipants.size === 2500
+                          ? "bg-primary-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                          }`}
                       >
                         First 2.5K
                       </button>
@@ -1146,11 +1215,10 @@ export default function Groups() {
                       <button
                         type="button"
                         onClick={() => selectLimitParticipants(5000)}
-                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
-                          selectedParticipants.size === 5000
-                            ? "bg-primary-600 text-white"
-                            : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
-                        }`}
+                        className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${selectedParticipants.size === 5000
+                          ? "bg-primary-600 text-white"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                          }`}
                       >
                         First 5K
                       </button>
@@ -1158,11 +1226,10 @@ export default function Groups() {
                     <button
                       type="button"
                       onClick={() => selectLimitParticipants(allParticipantNumbers.length)}
-                      className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${
-                        selectedParticipants.size === allParticipantNumbers.length
-                          ? "bg-primary-600 text-white"
-                          : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
-                      }`}
+                      className={`px-2 py-0.5 text-[11px] font-semibold rounded-md transition-colors ${selectedParticipants.size === allParticipantNumbers.length
+                        ? "bg-primary-600 text-white"
+                        : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-primary-50 dark:hover:bg-primary-900/30"
+                        }`}
                     >
                       All ({allParticipantNumbers.length.toLocaleString()})
                     </button>
@@ -1200,18 +1267,16 @@ export default function Groups() {
                           <button
                             key={number}
                             onClick={() => toggleParticipant(number)}
-                            className={`w-full flex items-center gap-3 px-3.5 py-2 text-left transition-colors ${
-                              isChecked
-                                ? "bg-primary-50/50 dark:bg-primary-900/10"
-                                : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
-                            }`}
+                            className={`w-full flex items-center gap-3 px-3.5 py-2 text-left transition-colors ${isChecked
+                              ? "bg-primary-50/50 dark:bg-primary-900/10"
+                              : "hover:bg-slate-50 dark:hover:bg-slate-800/50"
+                              }`}
                           >
                             <div
-                              className={`rounded flex items-center justify-center flex-shrink-0 transition-all ${
-                                isChecked
-                                  ? "bg-primary-500 text-white"
-                                  : "border border-slate-300 dark:border-slate-600"
-                              }`}
+                              className={`rounded flex items-center justify-center flex-shrink-0 transition-all ${isChecked
+                                ? "bg-primary-500 text-white"
+                                : "border border-slate-300 dark:border-slate-600"
+                                }`}
                               style={{ width: 18, height: 18 }}
                             >
                               {isChecked && <Check size={11} strokeWidth={3} />}
@@ -1335,11 +1400,10 @@ export default function Groups() {
       {toast && (
         <div className="fixed bottom-6 right-6 z-50">
           <div
-            className={`px-5 py-4 rounded-xl shadow-2xl flex items-center gap-3 min-w-[300px] text-white ${
-              toast.type === "success"
-                ? "bg-gradient-to-r from-emerald-500 to-emerald-600"
-                : "bg-gradient-to-r from-red-500 to-red-600"
-            }`}
+            className={`px-5 py-4 rounded-xl shadow-2xl flex items-center gap-3 min-w-[300px] text-white ${toast.type === "success"
+              ? "bg-gradient-to-r from-emerald-500 to-emerald-600"
+              : "bg-gradient-to-r from-red-500 to-red-600"
+              }`}
           >
             {toast.type === "success" ? (
               <CheckCircle2 size={18} />

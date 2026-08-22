@@ -152,6 +152,17 @@ class SubscriptionService {
     );
   }
 
+  async isPartnerManagedAccount(user) {
+    if (this.isPartnerManagedUser(user)) return true;
+    if (!user?._id) return false;
+
+    // PartnerTenant is the authoritative mapping for DeskGo-managed
+    // accounts. The user flags are retained for compatibility with older
+    // accounts, but must not make a valid partner tenant fall back to the
+    // standalone OpenWhats subscription system.
+    return Boolean(await PartnerTenantService.findForUser(user._id));
+  }
+
   async bootstrapDefaults() {
     for (const plan of DEFAULT_PLANS) {
       await SubscriptionPlan.updateOne(
@@ -397,7 +408,7 @@ class SubscriptionService {
   }
 
   async assertResourceLimit(user, resourceKey, increment = 1) {
-    if (this.isPartnerManagedUser(user)) {
+    if (await this.isPartnerManagedAccount(user)) {
       return { managedBy: "deskgo", resourceKey, increment };
     }
 
@@ -460,7 +471,7 @@ class SubscriptionService {
   }
 
   async assertStorageLimit(user, incomingBytes = 0) {
-    if (this.isPartnerManagedUser(user)) {
+    if (await this.isPartnerManagedAccount(user)) {
       return { managedBy: "deskgo", incomingBytes };
     }
     const summary = await this.getUsageSummary(user._id);
@@ -491,7 +502,7 @@ class SubscriptionService {
   }
 
   async assertMessageQuota(user, count = 1) {
-    if (this.isPartnerManagedUser(user)) {
+    if (await this.isPartnerManagedAccount(user)) {
       return { managedBy: "deskgo", count };
     }
 
