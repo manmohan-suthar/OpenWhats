@@ -169,6 +169,51 @@ const MONGODB_URI =
   process.env.MONGODB_URI ||
   "mongodb+srv://admin:admin@cmr0.3uulrrh.mongodb.net";
 
+const MONGO_RETRY_BASE_DELAY_MS = 5_000;
+const MONGO_RETRY_MAX_DELAY_MS = 60_000;
+let databaseServicesStarted = false;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function connectMongoAndStartDatabaseServices() {
+  let attempt = 0;
+
+  while (true) {
+    try {
+      await mongoose.connect(MONGODB_URI, {
+        serverSelectionTimeoutMS: 10_000,
+      });
+      console.log("MongoDB connected");
+
+      await WhatsAppService.restoreSessions().catch((err) =>
+        console.error("WA restore error:", err.message),
+      );
+
+      if (!databaseServicesStarted) {
+        databaseServicesStarted = true;
+        await SubscriptionService.bootstrapDefaults();
+        startUploadScheduler(io);
+        PartnerWebhookService.start();
+      }
+      return;
+    } catch (err) {
+      attempt += 1;
+      const delay = Math.min(
+        MONGO_RETRY_MAX_DELAY_MS,
+        MONGO_RETRY_BASE_DELAY_MS * 2 ** Math.min(attempt - 1, 4),
+      );
+      console.error(
+        `[MongoDB] Connection attempt ${attempt} failed: ${err.message}`,
+      );
+      await mongoose.disconnect().catch(() => {});
+      console.log(`[MongoDB] Retrying in ${delay / 1_000}s...`);
+      await wait(delay);
+    }
+  }
+}
+
 const start = async () => {
   try {
     // ✅ 1. START SERVER FIRST (VERY IMPORTANT)
@@ -176,29 +221,12 @@ const start = async () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
 
-    // ✅ 2. CONNECT MONGODB (NON-BLOCKING)
+    // Keep the HTTP server available while MongoDB reconnects. Database
+    // dependent services start only after a connection is ready.
     console.log("Connecting to MongoDB...");
-    mongoose;
-    mongoose
-      .connect(MONGODB_URI)
-      .then(async () => {
-        console.log("✅ MongoDB connected");
-        await WhatsAppService.restoreSessions().catch((err) =>
-          console.error("WA restore error:", err.message),
-        );
-      })
-      .catch((err) => console.error("❌ MongoDB error:", err.message));
+    void connectMongoAndStartDatabaseServices();
 
-    // ✅ 3. BOOTSTRAP (NON-BLOCKING)
-    SubscriptionService.bootstrapDefaults().catch((err) =>
-      console.error("Bootstrap error:", err.message),
-    );
-
-    // ✅ 4. START REEL UPLOAD SCHEDULER
-    startUploadScheduler(io);
-    PartnerWebhookService.start();
-
-    // ✅ 5. SCHEDULER (SAFE)
+    // ✅ SCHEDULER (SAFE)
     // const runScheduler = async () => {
     //   try {
     //     const due = await Campaign.find({
