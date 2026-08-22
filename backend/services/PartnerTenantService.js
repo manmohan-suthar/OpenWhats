@@ -5,6 +5,7 @@ import {
   PartnerTenant,
   User,
 } from "../models/index.js";
+import PartnerSettingsService from "./PartnerSettingsService.js";
 
 class PartnerLimitError extends Error {
   constructor(message, details = {}) {
@@ -105,7 +106,31 @@ async function claimPartnerEvent(input) {
 class PartnerTenantService {
   async findForUser(userId) {
     if (!userId || !mongoose.Types.ObjectId.isValid(userId)) return null;
-    return PartnerTenant.findOne({ userId }).lean();
+    const tenant = await PartnerTenant.findOne({ userId }).lean();
+    if (!tenant) return null;
+
+    // Partner IDs can be rotated from the DeskGo admin settings. Keep older
+    // managed users attached to the current company tenant instead of making
+    // every request fail against a stale partner mapping.
+    const settings = await PartnerSettingsService.getResolvedSettings().catch(
+      () => null,
+    );
+    if (!settings?.partnerId || tenant.partner === settings.partnerId) {
+      return tenant;
+    }
+
+    const user = await User.findById(userId)
+      .select("partnerExternalCompanyId")
+      .lean();
+    const externalCompanyId = String(user?.partnerExternalCompanyId || "").trim();
+    if (!externalCompanyId) return tenant;
+
+    return (
+      (await PartnerTenant.findOne({
+        partner: settings.partnerId,
+        externalCompanyId,
+      }).lean()) || tenant
+    );
   }
 
   isUsable(tenant, now = new Date()) {
