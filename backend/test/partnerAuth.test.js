@@ -18,6 +18,11 @@ function responseRecorder() {
   };
 }
 
+function restoreEnv(key, value) {
+  if (value === undefined) delete process.env[key];
+  else process.env[key] = value;
+}
+
 test("partnerAuth accepts a current correctly signed request", async () => {
   const previous = process.env.DESKGO_PARTNER_SECRET;
   process.env.DESKGO_PARTNER_SECRET = "test-secret";
@@ -45,7 +50,7 @@ test("partnerAuth accepts a current correctly signed request", async () => {
   });
   assert.equal(called, true);
   assert.equal(req.partner, "deskgo");
-  process.env.DESKGO_PARTNER_SECRET = previous;
+  restoreEnv("DESKGO_PARTNER_SECRET", previous);
 });
 
 test("partnerAuth rejects an invalid signature", async () => {
@@ -70,5 +75,113 @@ test("partnerAuth rejects an invalid signature", async () => {
   assert.equal(called, false);
   assert.equal(res.statusCode, 401);
   assert.equal(res.payload.code, "INVALID_PARTNER_SIGNATURE");
-  process.env.DESKGO_PARTNER_SECRET = previous;
+  restoreEnv("DESKGO_PARTNER_SECRET", previous);
+});
+
+test("partnerAuth accepts unsigned trusted first-party DeskGo origin", async () => {
+  const previousSecret = process.env.DESKGO_PARTNER_SECRET;
+  const previousOrigins = process.env.DESKGO_TRUSTED_ORIGINS;
+  delete process.env.DESKGO_PARTNER_SECRET;
+  delete process.env.DESKGO_TRUSTED_ORIGINS;
+  const body = { eventId: "evt_test_3" };
+  const req = {
+    body,
+    rawBody: Buffer.from(JSON.stringify(body)),
+    headers: {
+      "x-partner-id": "deskgo",
+      "x-partner-event-id": "evt_test_3",
+      "x-partner-timestamp": String(Math.floor(Date.now() / 1000)),
+      "x-partner-origin": "https://deskgo.in",
+    },
+  };
+  const res = responseRecorder();
+  let called = false;
+  await partnerAuth(req, res, () => {
+    called = true;
+  });
+  assert.equal(called, true);
+  assert.equal(req.partner, "deskgo");
+  assert.equal(req.partnerAuthMode, "trusted-origin");
+  restoreEnv("DESKGO_PARTNER_SECRET", previousSecret);
+  restoreEnv("DESKGO_TRUSTED_ORIGINS", previousOrigins);
+});
+
+test("partnerAuth rejects unsigned untrusted partner origins", async () => {
+  const previousSecret = process.env.DESKGO_PARTNER_SECRET;
+  delete process.env.DESKGO_PARTNER_SECRET;
+  const body = { eventId: "evt_test_4" };
+  const req = {
+    body,
+    rawBody: Buffer.from(JSON.stringify(body)),
+    headers: {
+      "x-partner-id": "deskgo",
+      "x-partner-event-id": "evt_test_4",
+      "x-partner-timestamp": String(Math.floor(Date.now() / 1000)),
+      "x-partner-origin": "https://example.com",
+    },
+  };
+  const res = responseRecorder();
+  let called = false;
+  await partnerAuth(req, res, () => {
+    called = true;
+  });
+  assert.equal(called, false);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.payload.code, "UNTRUSTED_PARTNER_ORIGIN");
+  restoreEnv("DESKGO_PARTNER_SECRET", previousSecret);
+});
+
+test("partnerAuth accepts unsigned localhost origin only outside production", async () => {
+  const previousSecret = process.env.DESKGO_PARTNER_SECRET;
+  const previousNodeEnv = process.env.NODE_ENV;
+  delete process.env.DESKGO_PARTNER_SECRET;
+  process.env.NODE_ENV = "development";
+  const body = { eventId: "evt_test_5" };
+  const req = {
+    body,
+    rawBody: Buffer.from(JSON.stringify(body)),
+    headers: {
+      "x-partner-id": "deskgo",
+      "x-partner-event-id": "evt_test_5",
+      "x-partner-timestamp": String(Math.floor(Date.now() / 1000)),
+      "x-partner-origin": "http://localhost:3000",
+    },
+  };
+  const res = responseRecorder();
+  let called = false;
+  await partnerAuth(req, res, () => {
+    called = true;
+  });
+  assert.equal(called, true);
+  assert.equal(req.partnerAuthMode, "trusted-origin");
+  restoreEnv("DESKGO_PARTNER_SECRET", previousSecret);
+  restoreEnv("NODE_ENV", previousNodeEnv);
+});
+
+test("partnerAuth rejects unsigned localhost origin in production", async () => {
+  const previousSecret = process.env.DESKGO_PARTNER_SECRET;
+  const previousNodeEnv = process.env.NODE_ENV;
+  delete process.env.DESKGO_PARTNER_SECRET;
+  process.env.NODE_ENV = "production";
+  const body = { eventId: "evt_test_6" };
+  const req = {
+    body,
+    rawBody: Buffer.from(JSON.stringify(body)),
+    headers: {
+      "x-partner-id": "deskgo",
+      "x-partner-event-id": "evt_test_6",
+      "x-partner-timestamp": String(Math.floor(Date.now() / 1000)),
+      "x-partner-origin": "http://localhost:3000",
+    },
+  };
+  const res = responseRecorder();
+  let called = false;
+  await partnerAuth(req, res, () => {
+    called = true;
+  });
+  assert.equal(called, false);
+  assert.equal(res.statusCode, 401);
+  assert.equal(res.payload.code, "UNTRUSTED_PARTNER_ORIGIN");
+  restoreEnv("DESKGO_PARTNER_SECRET", previousSecret);
+  restoreEnv("NODE_ENV", previousNodeEnv);
 });

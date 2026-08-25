@@ -7,17 +7,21 @@ resource limits, and usage reservations.
 ## OpenWhats admin configuration
 
 The `DESKGO_*` environment variables are secure defaults/fallbacks. An
-OpenWhats admin can override the partner ID, webhook URL, and all integration
-secrets from **Admin → System Settings → DeskGo Partner Integration**.
-Admin-managed secrets are AES-256-GCM encrypted at rest and are never returned
-by the API. Configure a stable `SETTINGS_ENCRYPTION_KEY` of at least 32
-characters before saving secrets.
+OpenWhats admin can override the partner ID and webhook URL from
+**Admin → System Settings → DeskGo Partner Integration**. DeskGo and EasyFlow
+first-party origins are trusted by default for partner sync:
+
+- `https://deskgo.in`
+- `https://easyflow.suthartech.com`
+
+Set `DESKGO_TRUSTED_ORIGINS` only when adding another first-party deployment.
+Legacy signing and key-derivation secrets remain optional fallbacks.
 
 ## Managed tenant provisioning
 
 `POST /api/partner/v1/tenants/provision`
 
-Use the signed partner headers documented below. Example body:
+Use the partner headers documented below. Example body:
 
 ```json
 {
@@ -33,27 +37,34 @@ This idempotently creates a partner-managed OpenWhats user, suspended tenant,
 and scoped API key. Partner-managed users cannot sign in to OpenWhats. DeskGo
 must keep the returned key in encrypted server-side secret storage.
 
-The credential is derived with `DESKGO_API_KEY_DERIVATION_SECRET`, company ID,
-and `credentialVersion`. A retry returns the same key; increment the version to
-rotate it and revoke the prior managed credential. Older versions are rejected.
-Configure a separate random derivation secret of at least 32 characters. Call
-entitlement sync after provisioning to activate access.
+The managed credential is derived from company ID and `credentialVersion`. If
+`DESKGO_API_KEY_DERIVATION_SECRET` is configured, OpenWhats uses it as a legacy
+HMAC secret; otherwise it uses deterministic first-party derivation. A retry
+returns the same key; increment the version to rotate it and revoke the prior
+managed credential. Older versions are rejected. Call entitlement sync after
+provisioning to activate access.
 
 ## Entitlement sync
 
 `POST /api/partner/v1/entitlements/sync`
 
-Required headers:
+Required headers for first-party DeskGo/EasyFlow:
 
 ```http
 Content-Type: application/json
 X-Partner-Id: deskgo
 X-Partner-Event-Id: evt_unique_id
 X-Partner-Timestamp: 1784975400
+X-Partner-Origin: https://deskgo.in
+```
+
+Optional legacy signed requests may send:
+
+```http
 X-Partner-Signature: sha256=<hex hmac>
 ```
 
-The signature is:
+The legacy signature is:
 
 ```text
 hex(HMAC-SHA256(DESKGO_PARTNER_SECRET, timestamp + "." + exactJsonBody))

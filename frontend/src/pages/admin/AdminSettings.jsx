@@ -639,8 +639,6 @@ function MetaOAuthSettingsSection() {
 
 function DeskGoPartnerSettingsSection() {
   const emptySecrets = {
-    partnerSecret: "",
-    apiKeyDerivationSecret: "",
     webhookSecret: "",
   };
   const [settings, setSettings] = useState({
@@ -689,12 +687,6 @@ function DeskGoPartnerSettingsSection() {
   };
 
   const secretFields = [
-    ["partnerSecret", "Inbound signing secret", "DESKGO_PARTNER_SECRET"],
-    [
-      "apiKeyDerivationSecret",
-      "API key derivation secret",
-      "DESKGO_API_KEY_DERIVATION_SECRET",
-    ],
     ["webhookSecret", "Outbound webhook secret", "DESKGO_WEBHOOK_SECRET"],
   ];
 
@@ -710,7 +702,7 @@ function DeskGoPartnerSettingsSection() {
               DeskGo Partner Integration
             </p>
             <p className="text-xs text-slate-500">
-              Signed entitlements, managed credentials and WhatsApp webhooks
+              First-party DeskGo sync, managed credentials and WhatsApp webhooks
             </p>
           </div>
         </div>
@@ -795,7 +787,7 @@ function DeskGoPartnerSettingsSection() {
             </div>
             <div className="flex items-center justify-between">
               <p className="text-xs text-slate-500">
-                Secrets are encrypted and never returned by the API.
+                DeskGo and EasyFlow are trusted first-party origins. Only the outbound webhook secret is needed for OpenWhats-to-DeskGo event verification.
               </p>
               <button
                 type="button"

@@ -21,6 +21,21 @@ test("managed partner credentials are deterministic and versioned", () => {
   process.env.DESKGO_API_KEY_DERIVATION_SECRET = previous;
 });
 
+test("managed partner credentials do not require a configured derivation secret", () => {
+  const previous = process.env.DESKGO_API_KEY_DERIVATION_SECRET;
+  delete process.env.DESKGO_API_KEY_DERIVATION_SECRET;
+
+  const first = deriveRawKey("deskgo", "company-1", 1);
+  const retry = deriveRawKey("deskgo", "company-1", 1);
+  const rotated = deriveRawKey("deskgo", "company-1", 2);
+
+  assert.equal(first, retry);
+  assert.notEqual(first, rotated);
+  assert.match(first, /^wac_live_[a-f0-9]{48}$/);
+
+  process.env.DESKGO_API_KEY_DERIVATION_SECRET = previous;
+});
+
 test("managed partner account identities are unique per company", () => {
   const first = deriveManagedAccountEmail("deskgo", "company-1");
   const retry = deriveManagedAccountEmail("deskgo", "company-1");
